@@ -4,8 +4,6 @@ import { applyPatch } from "diff";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
 
-export type Mode = "ask" | "auto" | "plan";
-
 interface Mention {
   path: string; // workspace-relative
   startLine?: number;
@@ -18,35 +16,23 @@ interface SendRequest {
   images: { dataUrl: string; mime: string; name: string }[];
   includeSelection: boolean;
   model?: { providerID: string; modelID: string };
-  mode: Mode;
+  agent: string;
+  autoEdit: boolean;
 }
 
-/** Permission rules applied to a session for each mode, mirroring Claude Code's modes. */
-function rulesFor(mode: Mode) {
-  switch (mode) {
-    case "ask":
-      return [
-        { permission: "edit", pattern: "*", action: "ask" },
-        { permission: "bash", pattern: "*", action: "ask" },
-      ];
-    case "auto":
-      return [
-        { permission: "edit", pattern: "*", action: "allow" },
-        { permission: "bash", pattern: "*", action: "ask" },
-      ];
-    case "plan":
-      return [
-        { permission: "edit", pattern: "*", action: "deny" },
-        { permission: "bash", pattern: "*", action: "ask" },
-      ];
-  }
+/** Session permission rules. Shell commands always ask; edits ask unless auto-approved. */
+function rulesFor(autoEdit: boolean) {
+  return [
+    { permission: "edit", pattern: "*", action: autoEdit ? "allow" : "ask" },
+    { permission: "bash", pattern: "*", action: "ask" },
+  ];
 }
 
 /** Connects one webview (sidebar or editor tab) to one OpenCode session at a time. */
 export class ChatController implements vscode.Disposable {
   private sessionID: string | undefined;
   private childSessions = new Set<string>();
-  private mode: Mode;
+  private autoEdit: boolean;
   private disposables: vscode.Disposable[] = [];
   private selectionTimer: NodeJS.Timeout | undefined;
   private lastEditor: vscode.TextEditor | undefined;
@@ -59,7 +45,7 @@ export class ChatController implements vscode.Disposable {
     private readonly onTitle: (title: string) => void,
     private readonly showLogs: () => void,
   ) {
-    this.mode = vscode.workspace.getConfiguration("opencode").get<Mode>("initialMode") ?? "ask";
+    this.autoEdit = vscode.workspace.getConfiguration("opencode").get<boolean>("autoApproveEdits") ?? false;
     webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, "dist"), vscode.Uri.joinPath(extensionUri, "media")],
@@ -162,10 +148,10 @@ export class ChatController implements vscode.Disposable {
         await this.server.request("DELETE", `/session/${msg.id}`);
         if (msg.id === this.sessionID) this.newSession();
         return this.handle({ type: "listSessions" });
-      case "setMode":
-        this.mode = msg.mode;
+      case "setAutoEdit":
+        this.autoEdit = !!msg.autoEdit;
         if (this.sessionID) {
-          await this.server.request("PATCH", `/session/${this.sessionID}`, { permission: rulesFor(this.mode) });
+          await this.server.request("PATCH", `/session/${this.sessionID}`, { permission: rulesFor(this.autoEdit) });
         }
         return;
       case "permissionReply":
@@ -243,10 +229,11 @@ export class ChatController implements vscode.Disposable {
     }
     this.post({
       type: "init",
-      mode: this.mode,
+      autoEdit: this.autoEdit,
       models,
       defaultModel,
       agents: agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name),
+      agentColors: Object.fromEntries(agents.filter((a) => a.color).map((a) => [a.name, a.color])),
       commands: commands.map((c) => ({ name: c.name, description: c.description ?? "" })),
       cwd: this.server.directory,
     });
@@ -256,7 +243,7 @@ export class ChatController implements vscode.Disposable {
 
   private async ensureSession(): Promise<string> {
     if (this.sessionID) return this.sessionID;
-    const session = await this.server.request<any>("POST", "/session", { permission: rulesFor(this.mode) });
+    const session = await this.server.request<any>("POST", "/session", { permission: rulesFor(this.autoEdit) });
     this.sessionID = session.id;
     this.childSessions.clear();
     this.post({ type: "session", session, messages: [] });
@@ -280,7 +267,7 @@ export class ChatController implements vscode.Disposable {
     for (const p of perms) if (p.sessionID === id) this.post({ type: "event", event: { type: "permission.asked", properties: p } });
     for (const q of questions) if (q.sessionID === id) this.post({ type: "event", event: { type: "question.asked", properties: q } });
     await this.server
-      .request("PATCH", `/session/${id}`, { permission: rulesFor(this.mode) })
+      .request("PATCH", `/session/${id}`, { permission: rulesFor(this.autoEdit) })
       .catch(() => undefined);
   }
 
@@ -288,7 +275,7 @@ export class ChatController implements vscode.Disposable {
     const text = req.text.trim();
     const slash = text.match(/^\/(\S+)\s*([\s\S]*)$/);
     const sessionID = await this.ensureSession();
-    const agent = req.mode === "plan" ? "plan" : "build";
+    const agent = req.agent || "build";
 
     const fileParts: any[] = [];
     for (const m of req.mentions) {
@@ -334,7 +321,7 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  /** The active editor's selection, sent as hidden context like Claude Code does. */
+  /** The active editor's selection, attached as hidden context. */
   private selectionContext() {
     const editor = vscode.window.activeTextEditor ?? this.lastEditor;
     if (!editor || editor.document.uri.scheme !== "file") return undefined;
@@ -344,7 +331,7 @@ export class ChatController implements vscode.Disposable {
       return {
         type: "text",
         synthetic: true,
-        text: `<ide_context>The user has ${rel} open in their editor. This may or may not be relevant.</ide_context>`,
+        text: `[Editor context] The user currently has ${rel} open in VS Code. It may or may not be relevant.`,
       };
     }
     const content = editor.document.getText(sel);
@@ -352,10 +339,10 @@ export class ChatController implements vscode.Disposable {
       type: "text",
       synthetic: true,
       text:
-        `<ide_selection>The user selected lines ${sel.start.line + 1}-${sel.end.line + 1} of ${rel}:\n` +
+        `[Editor context] The user has lines ${sel.start.line + 1}-${sel.end.line + 1} of ${rel} selected in VS Code:\n` +
         "```\n" +
         content +
-        "\n```\nThis may or may not be relevant to the request.</ide_selection>",
+        "\n```\nIt may or may not be relevant to the request.",
     };
   }
 
@@ -368,7 +355,7 @@ export class ChatController implements vscode.Disposable {
         out.push(p);
       }
     };
-    // Open editors first, like Claude Code.
+    // Open editors first.
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         const input = tab.input as any;

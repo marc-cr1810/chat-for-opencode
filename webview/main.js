@@ -26,14 +26,12 @@ const md = (text) => marked.parse(text || "");
 
 // --------------------------------------------------------------------- state
 
-const MODES = {
-  ask: { label: "Ask before edits", icon: icons.hand },
-  auto: { label: "Edit automatically", icon: icons.fastForward },
-  plan: { label: "Plan mode", icon: icons.pause },
+// Agent palette in OpenCode theme order: build is blue, plan is purple, then green, orange, peach.
+// Agents with a `color` in their OpenCode config use that instead.
+const AGENT_COLORS = {
+  dark: ["#5c9cf5", "#9d7cd8", "#7fd88f", "#f5a742", "#fab283"],
+  light: ["#2f6fd0", "#7650b8", "#2f8a4a", "#b86e10", "#c4621f"],
 };
-const MODE_ORDER = ["ask", "auto", "plan"];
-const SPINNER = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
-const VERBS = ["Thinking", "Pondering", "Cooking", "Tinkering", "Crafting", "Noodling", "Brewing", "Computing", "Mulling", "Percolating", "Conjuring", "Scheming"];
 const BUILTIN_COMMANDS = [
   { name: "new", description: "Start a new conversation", builtin: true },
   { name: "clear", description: "Start a new conversation", builtin: true },
@@ -46,7 +44,10 @@ const saved = vscode.getState() || {};
 const state = {
   ready: false,
   serverStatus: "starting",
-  mode: "ask",
+  agent: "build",
+  agents: ["build", "plan"],
+  agentColors: {},
+  autoEdit: false,
   models: [],
   model: saved.model || null,
   commands: [],
@@ -55,7 +56,6 @@ const state = {
   order: [], // message ids
   busy: false,
   busySince: 0,
-  verb: VERBS[0],
   permissions: [], // pending requests
   questions: [],
   todos: [],
@@ -114,7 +114,8 @@ app.innerHTML = `
       <textarea id="input" rows="1" placeholder="Ask OpenCode…  (@ files, / commands)"></textarea>
       <div class="composer-foot">
         <div class="foot-left">
-          <button class="pill mode-pill" id="modeBtn" title="Switch mode (Shift+Tab)"></button>
+          <button class="agent-pill" id="modeBtn" title="Switch agent (Tab)"></button>
+          <button class="pill edits-pill" id="editsBtn"></button>
           <button class="pill sel-pill hidden" id="selBtn" title="Include current selection"></button>
         </div>
         <div class="foot-right">
@@ -155,9 +156,9 @@ function renderEmpty() {
       : h(
           "div",
           { class: "empty-tips" },
-          tip(icons.at, "Mention files with @, or press Alt+K in the editor"),
+          tip(icons.at, "Mention files with @, or press Ctrl+Alt+K in the editor"),
           tip(icons.slash, "Type / for commands"),
-          tip(icons.fastForward, "Shift+Tab switches between ask, auto-edit and plan modes"),
+          tip(icons.bot, "Tab switches agent (build / plan)"),
         ),
   );
 }
@@ -245,7 +246,7 @@ function renderMessage(id) {
   if (msg.info.error && msg.info.error.name !== "MessageAbortedError") {
     el.append(h("div", { class: "error-block" }, errorText(msg.info.error)));
   } else if (msg.info.error?.name === "MessageAbortedError") {
-    el.append(h("div", { class: "interrupted" }, "Interrupted by user"));
+    el.append(h("div", { class: "interrupted" }, "Stopped"));
   }
   return el;
 }
@@ -258,12 +259,12 @@ function renderPart(p) {
   switch (p.type) {
     case "text":
       if (p.synthetic || p.ignored || !p.text) return null;
-      return h("div", { class: "row text-row", "data-pid": p.id }, h("span", { class: "dot text-dot" }), h("div", { class: "markdown", html: md(p.text) }));
+      return h("div", { class: "row text-row", "data-pid": p.id }, h("div", { class: "markdown", html: md(p.text) }));
     case "reasoning": {
       if (!p.text?.trim()) return null;
       const done = !!p.time?.end;
       const secs = done ? Math.max(1, Math.round((p.time.end - p.time.start) / 1000)) : null;
-      return collapsible(p.id, h("span", { class: "thinking-label" }, done ? `Thought for ${secs}s` : "Thinking…"), h("div", { class: "markdown thinking", html: md(p.text) }), "thinking-row", false);
+      return collapsible(p.id, h("span", { class: "thinking-label" }, h("span", { class: "tool-icon", html: icons.sparkle }), done ? `Reasoning · ${secs}s` : "Reasoning…"), h("div", { class: "markdown thinking", html: md(p.text) }), "thinking-row", false);
     }
     case "tool":
       return renderTool(p);
@@ -302,46 +303,46 @@ function toolSummary(p) {
   const file = i.filePath || i.file_path || i.path;
   switch (t) {
     case "read":
-      return { name: "Read", arg: short(file), file };
+      return { name: "Read", arg: short(file), file, icon: icons.file };
     case "edit":
     case "multiedit":
-      return { name: "Update", arg: short(file), file };
+      return { name: "Edit", arg: short(file), file, icon: icons.pencil };
     case "write":
-      return { name: "Write", arg: short(file), file };
+      return { name: "Write", arg: short(file), file, icon: icons.pencil };
     case "patch":
     case "apply_patch":
-      return { name: "Patch", arg: p.state?.title || "" };
+      return { name: "Patch", arg: p.state?.title || "", icon: icons.pencil };
     case "bash":
-      return { name: "Bash", arg: i.command || "" };
+      return { name: "Shell", arg: i.command || "", icon: icons.terminal };
     case "glob":
-      return { name: "Search", arg: `${i.pattern || ""}${i.path ? " in " + short(i.path) : ""}` };
+      return { name: "Glob", arg: `${i.pattern || ""}${i.path ? " in " + short(i.path) : ""}`, icon: icons.search };
     case "grep":
-      return { name: "Grep", arg: `"${i.pattern || ""}"${i.path ? " in " + short(i.path) : ""}` };
+      return { name: "Grep", arg: `"${i.pattern || ""}"${i.path ? " in " + short(i.path) : ""}`, icon: icons.search };
     case "list":
-      return { name: "List", arg: short(i.path) || "." };
+      return { name: "List", arg: short(i.path) || ".", icon: icons.folder };
     case "webfetch":
-      return { name: "Fetch", arg: i.url || "" };
+      return { name: "Fetch", arg: i.url || "", icon: icons.globe };
     case "websearch":
     case "codesearch":
-      return { name: "Web Search", arg: i.query || "" };
+      return { name: "Web search", arg: i.query || "", icon: icons.globe };
     case "task":
-      return { name: "Task", arg: i.description || i.subagent_type || "" };
+      return { name: "Subagent", arg: i.description || i.subagent_type || "", icon: icons.bot };
     case "todowrite":
-      return { name: "Update Todos", arg: "" };
+      return { name: "Todos", arg: "", icon: icons.listCheck };
     case "todoread":
-      return { name: "Read Todos", arg: "" };
+      return { name: "Todos", arg: "", icon: icons.listCheck };
     case "skill":
-      return { name: "Skill", arg: i.name || "" };
+      return { name: "Skill", arg: i.name || "", icon: icons.sparkle };
     case "question":
-      return { name: "Question", arg: "" };
+      return { name: "Question", arg: "", icon: icons.help };
     default:
-      return { name: t, arg: p.state?.title || "" };
+      return { name: t, arg: p.state?.title || "", icon: icons.wrench };
   }
 }
 
 function renderTool(p) {
   const st = p.state || {};
-  const { name, arg, file } = toolSummary(p);
+  const { name, arg, file, icon } = toolSummary(p);
   const status = st.status || "pending";
   const head = h(
     "span",
@@ -404,13 +405,13 @@ function renderTool(p) {
     open = true;
   }
 
-  const dot = h("span", { class: `dot tool-dot ${status}` });
+  const dot = h("span", { class: `tool-icon status-${status}`, title: status, html: icon });
   if (!body) {
     return h(
       "div",
       { class: "row tool-row", "data-pid": p.id },
       dot,
-      h("div", { class: "tool-main" }, head, summary ? h("div", { class: "tool-sub" }, h("span", { class: "elbow" }, "⎿"), summary) : null),
+      h("div", { class: "tool-main" }, head, summary ? h("div", { class: "tool-sub" }, summary) : null),
     );
   }
   const el = h("div", { class: `row tool-row collapsible ${open ? "open" : ""}`, "data-pid": p.id }, dot);
@@ -419,7 +420,7 @@ function renderTool(p) {
     el.classList.toggle("open");
     el.classList.toggle("closed", !el.classList.contains("open"));
   });
-  el.append(h("div", { class: "tool-main" }, header, summary ? h("div", { class: "tool-sub" }, h("span", { class: "elbow" }, "⎿"), summary) : null, h("div", { class: "coll-body" }, body)));
+  el.append(h("div", { class: "tool-main" }, header, summary ? h("div", { class: "tool-sub" }, summary) : null, h("div", { class: "coll-body" }, body)));
   return el;
 }
 
@@ -473,8 +474,7 @@ function renderTodoList(todos) {
   );
 }
 
-// Status ("✻ Pondering… (12s · esc to interrupt)")
-let spinnerFrame = 0;
+// Status: block loader, agent name and elapsed time.
 function renderStatusRow() {
   const el = h("div", { class: "status-row" });
   fillStatusRow(el);
@@ -485,23 +485,20 @@ function fillStatusRow(el) {
   if (!state.busy) return;
   const secs = Math.floor((Date.now() - state.busySince) / 1000);
   el.innerHTML = "";
-  el.append(h("span", { class: "spinner" }, SPINNER[spinnerFrame % SPINNER.length]), h("span", { class: "verb" }, `${state.verb}…`), h("span", { class: "status-hint" }, `(${secs}s · esc to interrupt)`));
+  el.append(
+    h("span", { class: "loader" }, h("i"), h("i"), h("i"), h("i"), h("i")),
+    h("span", { class: "verb" }, `${state.agent} is working`),
+    h("span", { class: "status-hint" }, `${secs}s · Esc to stop`),
+  );
 }
 function updateStatusRow() {
   const el = messagesEl.querySelector(".status-row");
   if (el) fillStatusRow(el);
 }
-setInterval(() => {
-  if (!state.busy) return;
-  spinnerFrame++;
-  updateStatusRow();
-}, 120);
+setInterval(() => state.busy && updateStatusRow(), 1000);
 
 function setBusy(busy) {
-  if (busy && !state.busy) {
-    state.busySince = Date.now();
-    state.verb = VERBS[Math.floor(Math.random() * VERBS.length)];
-  }
+  if (busy && !state.busy) state.busySince = Date.now();
   state.busy = busy;
   updateStatusRow();
   renderSendBtn();
@@ -513,10 +510,23 @@ function renderTitle() {
   $("titleText").textContent = state.session?.title && !/^New session/i.test(state.session.title) ? state.session.title : "New conversation";
 }
 
+function agentColor(name) {
+  if (state.agentColors[name]) return state.agentColors[name];
+  const palette = document.body.classList.contains("vscode-light") ? AGENT_COLORS.light : AGENT_COLORS.dark;
+  const i = state.agents.indexOf(name);
+  return palette[(i < 0 ? 0 : i) % palette.length];
+}
+
 function renderModeBtn() {
-  const m = MODES[state.mode];
-  $("modeBtn").innerHTML = `${m.icon}<span>${m.label}</span>`;
-  $("modeBtn").className = `pill mode-pill mode-${state.mode}`;
+  const btn = $("modeBtn");
+  btn.innerHTML = `<span class="agent-name">${escapeHtml(state.agent)}</span>`;
+  // The whole panel takes on the active agent's colour.
+  document.body.style.setProperty("--accent", agentColor(state.agent));
+  const edits = $("editsBtn");
+  edits.classList.toggle("hidden", state.agent === "plan");
+  edits.innerHTML = `${state.autoEdit ? icons.zap : icons.shield}<span>${state.autoEdit ? "Auto-approve edits" : "Approve edits"}</span>`;
+  edits.classList.toggle("on", state.autoEdit);
+  edits.title = state.autoEdit ? "Edits are applied without asking — click to require approval" : "OpenCode asks before editing files — click to auto-approve";
 }
 
 function renderModelBtn() {
@@ -586,17 +596,17 @@ function permissionTitle(p) {
   const file = md0.filepath || md0.filePath || (p.patterns || [])[0];
   switch (p.permission) {
     case "edit":
-      return { title: `Make this edit to ${short(file)}?`, file };
+      return { title: `Edit ${short(file)}`, file };
     case "bash":
-      return { title: "Allow this command?", command: md0.command || (p.patterns || []).join(" ") };
+      return { title: "Run shell command", command: md0.command || (p.patterns || []).join(" ") };
     case "webfetch":
-      return { title: `Fetch ${md0.url || (p.patterns || [])[0] || "this URL"}?` };
+      return { title: `Fetch ${md0.url || (p.patterns || [])[0] || "URL"}` };
     case "external_directory":
-      return { title: `Access files outside the workspace (${(p.patterns || []).join(", ")})?` };
+      return { title: `Access outside workspace: ${(p.patterns || []).join(", ")}` };
     case "doom_loop":
-      return { title: "OpenCode is repeating the same tool call. Continue?" };
+      return { title: "Repeated tool call detected — continue?" };
     default:
-      return { title: `Allow ${p.permission}${p.patterns?.length ? ` on ${p.patterns.join(", ")}` : ""}?` };
+      return { title: `${p.permission}${p.patterns?.length ? `: ${p.patterns.join(", ")}` : ""}` };
   }
 }
 
@@ -604,49 +614,36 @@ function renderPermission(p) {
   const info = permissionTitle(p);
   const meta = p.metadata || {};
   const diff = meta.diff;
-  const options = [
-    { label: "Yes", reply: "once" },
-    {
-      label: p.permission === "edit" ? "Yes, allow all edits this session" : p.always?.length ? `Yes, and don't ask again for ${p.always.join(", ")}` : "Yes, and don't ask again",
-      reply: "always",
-    },
-    { label: "No, and tell OpenCode what to do differently", reply: "reject" },
-  ];
-  const feedback = h("textarea", { class: "feedback", rows: 2, placeholder: "Tell OpenCode what to do instead (optional)" });
+  const feedback = h("textarea", { class: "feedback", rows: 2, placeholder: "Reason for rejecting (optional, sent to the agent)" });
   const reply = (r) => {
     send({ type: "permissionReply", id: p.id, reply: r, message: r === "reject" ? feedback.value.trim() : undefined });
     state.permissions = state.permissions.filter((x) => x.id !== p.id);
-    if (r === "always" && p.permission === "edit" && state.mode === "ask") setMode("auto");
+    if (r === "always" && p.permission === "edit" && !state.autoEdit) setAutoEdit(true);
     renderCards();
   };
   const card = h(
     "div",
     { class: "card permission", tabindex: "0" },
+    h("div", { class: "card-kicker" }, h("span", { html: icons.shield }), "Permission required"),
     h("div", { class: "card-title" }, info.title),
     info.command ? h("pre", { class: "card-command" }, info.command) : null,
     meta.description ? h("div", { class: "card-desc" }, meta.description) : null,
     diff ? h("div", { class: "card-diff" }, renderDiff(diff)) : null,
     diff && info.file ? h("button", { class: "link-btn", onClick: () => send({ type: "openDiff", filePath: info.file, diff, before: meta.filediff?.before, after: meta.filediff?.after }) }, "Open diff in editor") : null,
+    feedback,
     h(
       "div",
-      { class: "options" },
-      options.map((o, i) => h("button", { class: `option ${i === 0 ? "primary" : ""}`, onClick: () => reply(o.reply) }, h("span", { class: "num" }, i + 1), o.label)),
+      { class: "perm-actions" },
+      h("button", { class: "btn primary", onClick: () => reply("once"), title: "Enter" }, "Allow once"),
+      h("button", { class: "btn", onClick: () => reply("always"), title: p.always?.length ? `Always allow ${p.always.join(", ")} this session` : "Always allow this session" }, "Allow always"),
+      h("button", { class: "btn danger", onClick: () => reply("reject"), title: "Esc" }, "Reject"),
     ),
-    feedback,
-    h("div", { class: "card-hint" }, "Press 1–3 to choose · Esc to reject"),
   );
   card.addEventListener("keydown", (e) => {
-    if (e.target === feedback && e.key !== "Escape" && !(e.key === "Enter" && !e.shiftKey)) return;
-    if (e.target === feedback && e.key === "Enter") {
-      e.preventDefault();
-      return reply("reject");
-    }
-    if (e.key === "1") reply("once");
-    else if (e.key === "2") reply("always");
-    else if (e.key === "3") {
-      e.preventDefault();
-      feedback.focus();
-    } else if (e.key === "Escape") reply("reject");
+    if (e.key === "Escape") return e.preventDefault(), reply("reject");
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    reply(e.target === feedback && feedback.value.trim() ? "reject" : "once");
   });
   setTimeout(() => card.focus(), 0);
   return card;
@@ -662,7 +659,6 @@ function renderQuestion(q) {
       const btn = h(
         "button",
         { class: "option", title: o.description },
-        h("span", { class: "num" }, i + 1),
         h("span", {}, h("span", { class: "opt-label" }, o.label), o.description ? h("span", { class: "opt-desc" }, o.description) : null),
       );
       btn.addEventListener("click", () => {
@@ -836,7 +832,8 @@ function submit() {
     images: state.images,
     includeSelection: state.includeSelection && !!state.selection,
     model: state.model || undefined,
-    mode: state.mode,
+    agent: state.agent,
+    autoEdit: state.autoEdit,
   });
   state.history.push(text);
   state.historyIndex = -1;
@@ -851,10 +848,15 @@ function submit() {
   scrollToBottom(true);
 }
 
-function setMode(mode) {
-  state.mode = mode;
+function cycleAgent() {
+  state.agent = state.agents[(state.agents.indexOf(state.agent) + 1) % state.agents.length];
   renderModeBtn();
-  send({ type: "setMode", mode });
+}
+
+function setAutoEdit(on) {
+  state.autoEdit = on;
+  renderModeBtn();
+  send({ type: "setAutoEdit", autoEdit: on });
 }
 
 input.addEventListener("input", () => {
@@ -875,9 +877,9 @@ input.addEventListener("keydown", (e) => {
     e.preventDefault();
     return submit();
   }
-  if (e.key === "Tab" && e.shiftKey) {
+  if (e.key === "Tab" && !e.shiftKey && state.agents.length > 1) {
     e.preventDefault();
-    return setMode(MODE_ORDER[(MODE_ORDER.indexOf(state.mode) + 1) % MODE_ORDER.length]);
+    return cycleAgent();
   }
   if (e.key === "Escape" && state.busy) {
     e.preventDefault();
@@ -917,7 +919,8 @@ input.addEventListener("paste", (e) => {
 });
 
 $("sendBtn").addEventListener("click", () => (state.busy && !input.value.trim() ? send({ type: "abort" }) : submit()));
-$("modeBtn").addEventListener("click", () => setMode(MODE_ORDER[(MODE_ORDER.indexOf(state.mode) + 1) % MODE_ORDER.length]));
+$("modeBtn").addEventListener("click", cycleAgent);
+$("editsBtn").addEventListener("click", () => setAutoEdit(!state.autoEdit));
 $("selBtn").addEventListener("click", () => ((state.includeSelection = !state.includeSelection), renderSelBtn()));
 $("atBtn").addEventListener("click", () => {
   const pos = input.selectionStart;
@@ -1075,6 +1078,11 @@ function loadSession(session, messages) {
     for (const p of parts) m.parts.set(p.id, p);
   }
   const last = messages[messages.length - 1]?.info;
+  const lastUser = [...messages].reverse().find((m) => m.info.role === "user")?.info;
+  if (lastUser?.agent && state.agents.includes(lastUser.agent)) {
+    state.agent = lastUser.agent;
+    renderModeBtn();
+  }
   setBusy(!!last && last.role === "assistant" && !last.time?.completed && !last.error);
   // Last todo state from history
   for (const { parts } of messages) for (const p of parts) if (p.type === "tool" && p.tool === "todowrite" && p.state?.input?.todos) state.todos = p.state.input.todos;
@@ -1185,7 +1193,10 @@ window.addEventListener("message", (ev) => {
   switch (msg.type) {
     case "init":
       state.ready = true;
-      state.mode = msg.mode;
+      state.autoEdit = msg.autoEdit;
+      state.agents = msg.agents.length ? msg.agents : ["build"];
+      state.agentColors = msg.agentColors || {};
+      if (!state.agents.includes(state.agent)) state.agent = state.agents[0];
       state.models = msg.models;
       state.cwd = msg.cwd;
       state.commands = msg.commands;

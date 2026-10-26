@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
-  "description": "Chat with OpenCode in a native VS Code panel, modelled on the Claude Code extension.",
+  "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
   "version": "0.1.0",
   "publisher": "local",
   "icon": "media/icon.png",
@@ -56,7 +56,7 @@
       },
       {
         "command": "opencode.insertAtMention",
-        "title": "OpenCode: Insert @-Mention of Selection"
+        "title": "OpenCode: Add Selection to Prompt"
       },
       {
         "command": "opencode.restartServer",
@@ -74,17 +74,18 @@
     "keybindings": [
       {
         "command": "opencode.focus",
-        "key": "ctrl+escape",
-        "mac": "cmd+escape"
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o"
       },
       {
         "command": "opencode.openInTab",
-        "key": "ctrl+shift+escape",
-        "mac": "cmd+shift+escape"
+        "key": "ctrl+alt+shift+o",
+        "mac": "cmd+alt+shift+o"
       },
       {
         "command": "opencode.insertAtMention",
-        "key": "alt+k",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
         "when": "editorTextFocus"
       }
     ],
@@ -96,20 +97,10 @@
           "default": "opencode",
           "description": "Path to the opencode executable."
         },
-        "opencode.initialMode": {
-          "type": "string",
-          "enum": [
-            "ask",
-            "auto",
-            "plan"
-          ],
-          "enumDescriptions": [
-            "Ask before edits",
-            "Edit automatically",
-            "Plan mode (read only)"
-          ],
-          "default": "ask",
-          "description": "Permission mode for new conversations."
+        "opencode.autoApproveEdits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Apply file edits without asking in new conversations. Shell commands always ask."
         },
         "opencode.model": {
           "type": "string",
@@ -123,7 +114,7 @@
             "sidebar"
           ],
           "default": "sidebar",
-          "description": "Where Ctrl+Esc opens OpenCode when no chat is open."
+          "description": "Where Ctrl+Alt+O opens OpenCode when no chat is open."
         }
       }
     }
