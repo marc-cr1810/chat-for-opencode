@@ -2,10 +2,14 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
   "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marc-cr1810/opencode-vscode.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },

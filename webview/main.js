@@ -60,6 +60,8 @@ const state = {
   questions: [],
   todos: [],
   todosOpen: true,
+  diff: [],
+  changesOpen: false,
   selection: null,
   includeSelection: true,
   images: [],
@@ -106,6 +108,7 @@ app.innerHTML = `
   <div class="popover hidden" id="morePop"></div>
   <main class="messages" id="messages"></main>
   <div class="bottom">
+    <div class="changes hidden" id="changes"></div>
     <div class="todos hidden" id="todos"></div>
     <div id="cards"></div>
     <div class="composer" id="composer">
@@ -121,6 +124,7 @@ app.innerHTML = `
         <div class="foot-right">
           <button class="icon-btn" id="atBtn" title="Add file (@)">${icons.at}</button>
           <button class="icon-btn" id="slashBtn" title="Commands (/)">${icons.slash}</button>
+          <button class="ctx-meter hidden" id="ctxBtn"></button>
           <button class="pill model-pill" id="modelBtn" title="Switch model"></button>
           <button class="send-btn" id="sendBtn" title="Send (Enter)">${icons.arrowUp}</button>
         </div>
@@ -178,14 +182,21 @@ function flush() {
     fullRender = false;
     renderQueued.clear();
     messagesEl.innerHTML = "";
-    if (!state.order.length) messagesEl.append(renderEmpty());
-    for (const id of state.order) messagesEl.append(renderMessage(id));
+    const visible = state.order.filter((id) => !isReverted(id));
+    if (!visible.length && !state.session?.revert) messagesEl.append(renderEmpty());
+    for (const id of visible) messagesEl.append(renderMessage(id));
+    if (state.session?.revert) messagesEl.append(renderRevertBanner());
     messagesEl.append(renderStatusRow());
+    renderContext();
     scrollToBottom();
     return;
   }
   for (const id of renderQueued) {
     const old = messagesEl.querySelector(`[data-mid="${id}"]`);
+    if (isReverted(id) || !state.messages.has(id)) {
+      old?.remove();
+      continue;
+    }
     const fresh = renderMessage(id);
     if (old) {
       preserveOpen(old, fresh);
@@ -198,7 +209,33 @@ function flush() {
   }
   renderQueued.clear();
   updateStatusRow();
+  renderContext();
   scrollToBottom();
+}
+
+const isReverted = (id) => !!state.session?.revert && id >= state.session.revert.messageID;
+
+function renderRevertBanner() {
+  const undone = state.order.filter((id) => isReverted(id) && state.messages.get(id)?.info.role === "user").length;
+  return h(
+    "div",
+    { class: "revert-banner" },
+    h("span", { class: "tool-icon", html: icons.undo }),
+    h("span", {}, `Undid ${undone} message${undone === 1 ? "" : "s"} and restored files. Sending a new message makes this permanent.`),
+    h("button", { class: "btn", onClick: () => send({ type: "unrevert" }) }, h("span", { html: icons.redo }), "Redo"),
+  );
+}
+
+function undoTo(id) {
+  if (state.busy && !confirm("OpenCode is still working. Stop it and undo?")) return;
+  const msg = state.messages.get(id);
+  const text = [...msg.parts.values()].filter((p) => p.type === "text" && !p.synthetic && !p.ignored).map((p) => p.text).join("\n");
+  if (!input.value.trim()) {
+    input.value = text;
+    autosize();
+    renderSendBtn();
+  }
+  send({ type: "revert", messageID: id });
 }
 
 /** Keep expanded tool/thinking blocks expanded across re-renders. */
@@ -223,6 +260,12 @@ function renderMessage(id) {
       h(
         "div",
         { class: "user-bubble" },
+        h("button", {
+          class: "icon-btn undo-btn",
+          title: "Undo to here: removes this message and everything after it, and restores files",
+          html: icons.undo,
+          onClick: () => undoTo(id),
+        }),
         files.length
           ? h(
               "div",
@@ -555,6 +598,85 @@ function renderSendBtn() {
   btn.disabled = !showStop && !input.value.trim() && !state.images.length;
 }
 
+function renderChanges() {
+  const el = $("changes");
+  const files = state.diff.filter((f) => f.file);
+  el.classList.toggle("hidden", !files.length);
+  if (!files.length) return;
+  const add = files.reduce((n, f) => n + (f.additions || 0), 0);
+  const del = files.reduce((n, f) => n + (f.deletions || 0), 0);
+  el.innerHTML = "";
+  el.append(
+    h(
+      "div",
+      { class: "changes-head", onClick: () => ((state.changesOpen = !state.changesOpen), renderChanges()) },
+      h("span", { class: "chev", html: state.changesOpen ? icons.chevronDown : icons.chevronRight }),
+      `${files.length} file${files.length === 1 ? "" : "s"} changed`,
+      h("span", { class: "add" }, `+${add}`),
+      h("span", { class: "del" }, `-${del}`),
+    ),
+  );
+  if (!state.changesOpen) return;
+  const list = h("div", { class: "changes-list" });
+  for (const f of files) {
+    const status = f.status || "modified";
+    list.append(
+      h(
+        "div",
+        { class: "change-row", title: `Open diff for ${f.file}`, onClick: () => send({ type: "openDiff", filePath: f.file, diff: f.patch }) },
+        h("span", { class: `change-status ${status}` }, status[0].toUpperCase()),
+        h("span", { class: "change-name" }, f.file.split("/").pop()),
+        h("span", { class: "change-dir" }, f.file.includes("/") ? f.file.slice(0, f.file.lastIndexOf("/")) : ""),
+        h("span", { class: "add" }, `+${f.additions || 0}`),
+        h("span", { class: "del" }, `-${f.deletions || 0}`),
+        h("button", {
+          class: "icon-btn",
+          title: status === "added" ? "Delete this new file" : "Discard changes to this file",
+          html: icons.undo,
+          onClick: (e) => {
+            e.stopPropagation();
+            send({ type: "discardFile", file: f.file, patch: f.patch, status });
+          },
+        }),
+      ),
+    );
+  }
+  el.append(list);
+}
+
+const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
+
+function renderContext() {
+  const btn = $("ctxBtn");
+  let last = null;
+  let cost = 0;
+  for (const id of state.order) {
+    if (isReverted(id)) continue;
+    const info = state.messages.get(id)?.info;
+    if (info?.role !== "assistant") continue;
+    cost += info.cost || 0;
+    const t = info.tokens;
+    const used = t ? t.total || t.input + t.output + t.reasoning + (t.cache?.read || 0) + (t.cache?.write || 0) : 0;
+    if (used > 0) last = { used, providerID: info.providerID, modelID: info.modelID };
+  }
+  btn.classList.toggle("hidden", !last);
+  if (!last) return;
+  const model =
+    state.models.find((m) => m.providerID === last.providerID && m.modelID === last.modelID) ||
+    state.models.find((m) => state.model && m.providerID === state.model.providerID && m.modelID === state.model.modelID);
+  const limit = model?.context;
+  const pct = limit ? Math.min(100, Math.round((last.used / limit) * 100)) : null;
+  const r = 6;
+  const circ = 2 * Math.PI * r;
+  const ring = pct === null ? "" : `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><circle cx="8" cy="8" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="${(circ * pct) / 100} ${circ}" transform="rotate(-90 8 8)"/></svg>`;
+  btn.innerHTML = `${ring}<span>${pct === null ? fmtTokens(last.used) : `${pct}%`}</span>${cost > 0 ? `<span class="ctx-cost">$${cost.toFixed(2)}</span>` : ""}`;
+  btn.className = `ctx-meter ${pct >= 90 ? "crit" : pct >= 75 ? "warn" : ""}`;
+  btn.title =
+    `${fmtTokens(last.used)}${limit ? ` of ${fmtTokens(limit)}` : ""} tokens in context` +
+    (cost > 0 ? ` · $${cost.toFixed(4)} spent` : "") +
+    "\nClick to compact the conversation";
+}
+
 function renderTodos() {
   const el = $("todos");
   const todos = state.todos;
@@ -758,6 +880,7 @@ function acceptMenu() {
     state.model = { providerID: it.value.providerID, modelID: it.value.modelID };
     persist();
     renderModelBtn();
+    renderContext();
   }
   autosize();
   renderSendBtn();
@@ -937,6 +1060,9 @@ $("slashBtn").addEventListener("click", () => {
   input.setSelectionRange(1, 1);
   updateMenuFromInput();
 });
+$("ctxBtn").addEventListener("click", () => {
+  if (confirm("Compact this conversation? OpenCode will summarize it to free up context.")) runBuiltin("compact");
+});
 $("modelBtn").addEventListener("click", (e) => {
   e.stopPropagation();
   if (menu?.kind === "model") return closeMenu();
@@ -1073,6 +1199,8 @@ function loadSession(session, messages) {
   state.permissions = [];
   state.questions = [];
   state.todos = [];
+  state.diff = [];
+  renderChanges();
   for (const { info, parts } of messages) {
     const m = upsertMessage(info);
     for (const p of parts) m.parts.set(p.id, p);
@@ -1142,13 +1270,19 @@ function onEvent(e) {
       break;
     case "session.updated":
       if (p.info?.id === state.session?.id) {
+        const revertChanged = JSON.stringify(state.session.revert) !== JSON.stringify(p.info.revert);
         state.session = p.info;
         renderTitle();
+        if (revertChanged) queueRender();
       }
       break;
     case "session.error":
       if (p.error && p.error.name !== "MessageAbortedError") showError(errorText(p.error));
       setBusy(false);
+      break;
+    case "session.diff":
+      state.diff = p.diff || [];
+      renderChanges();
       break;
     case "todo.updated":
       state.todos = p.todos || [];

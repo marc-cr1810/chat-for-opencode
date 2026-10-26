@@ -16,6 +16,9 @@ whatever providers, models, agents and commands you've configured for the openco
 - `@` file mentions with autocomplete, `@file#L10-20` line ranges, pasted images
 - `/` commands: built-ins (`/new`, `/compact`, `/model`, `/history`) plus your OpenCode commands
 - Model picker, past conversations (search, resume, delete), task list, Esc to interrupt
+- **Undo to here** on any of your messages: rolls the conversation back and restores the files OpenCode changed (with Redo)
+- **Changes panel** listing every file the session changed, with +/- counts, native diff view and per-file discard
+- **Context meter** showing how full the model's context is and what the session has cost; click to compact
 - Questions asked by the agent rendered as option cards
 
 ## Keybindings
@@ -40,7 +43,7 @@ whatever providers, models, agents and commands you've configured for the openco
 ```bash
 npm install
 npm run package   # produces opencode-vscode-<version>.vsix
-code --install-extension opencode-vscode-0.1.0.vsix
+code --install-extension opencode-vscode-0.2.0.vsix
 ```
 
 For development, open this folder in VS Code and press F5.

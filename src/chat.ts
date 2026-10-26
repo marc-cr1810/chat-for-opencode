@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { applyPatch } from "diff";
+import { applyPatch, createPatch, parsePatch, reversePatch } from "diff";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
 
@@ -183,6 +183,26 @@ export class ChatController implements vscode.Disposable {
       }
       case "openDiff":
         return this.openDiff(msg.filePath, msg.diff, msg.before, msg.after);
+      case "revert": {
+        if (!this.sessionID) return;
+        const status = await this.server.request<any>("GET", "/session/status").catch(() => ({}));
+        if (status?.[this.sessionID]?.type === "busy") {
+          await this.server.request("POST", `/session/${this.sessionID}/abort`);
+        }
+        const session = await this.server.request<any>("POST", `/session/${this.sessionID}/revert`, {
+          messageID: msg.messageID,
+        });
+        this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
+        return this.sendDiff();
+      }
+      case "unrevert": {
+        if (!this.sessionID) return;
+        const session = await this.server.request<any>("POST", `/session/${this.sessionID}/unrevert`);
+        this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
+        return this.sendDiff();
+      }
+      case "discardFile":
+        return this.discardFile(msg.file, msg.patch, msg.status);
       case "compact": {
         if (!this.sessionID || !msg.model) return;
         await this.server.request("POST", `/session/${this.sessionID}/summarize`, msg.model);
@@ -211,10 +231,16 @@ export class ChatController implements vscode.Disposable {
       this.server.request<any[]>("GET", "/agent"),
       this.server.request<any[]>("GET", "/command"),
     ]);
-    const models: { providerID: string; providerName: string; modelID: string; name: string }[] = [];
+    const models: { providerID: string; providerName: string; modelID: string; name: string; context?: number }[] = [];
     for (const p of providers.providers ?? []) {
       for (const [id, m] of Object.entries<any>(p.models ?? {})) {
-        models.push({ providerID: p.id, providerName: p.name ?? p.id, modelID: id, name: m.name ?? id });
+        models.push({
+          providerID: p.id,
+          providerName: p.name ?? p.id,
+          modelID: id,
+          name: m.name ?? id,
+          context: m.limit?.context || undefined,
+        });
       }
     }
     let defaultModel: { providerID: string; modelID: string } | undefined;
@@ -259,6 +285,7 @@ export class ChatController implements vscode.Disposable {
     this.childSessions.clear();
     this.onTitle(session.title || "OpenCode");
     this.post({ type: "session", session, messages });
+    await this.sendDiff();
     // Re-surface anything still waiting for an answer.
     const [perms, questions] = await Promise.all([
       this.server.request<any[]>("GET", "/permission").catch(() => []),
@@ -384,42 +411,144 @@ export class ChatController implements vscode.Disposable {
     return out.slice(0, 30);
   }
 
+  private diffTimer: NodeJS.Timeout | undefined;
+
+  private queueDiff() {
+    clearTimeout(this.diffTimer);
+    this.diffTimer = setTimeout(() => this.sendDiff().catch(() => undefined), 300);
+  }
+
+  /**
+   * Cumulative changes for the session. Each user message records the per-file patches of its
+   * turn; walking them backwards from the current file contents recovers each file's original.
+   * Turns that have been undone are skipped.
+   */
+  private async sendDiff() {
+    const sessionID = this.sessionID;
+    if (!sessionID) return;
+    const [session, messages] = await Promise.all([
+      this.server.request<any>("GET", `/session/${sessionID}`),
+      this.server.request<any[]>("GET", `/session/${sessionID}/message`),
+    ]);
+    const revertID: string | undefined = session.revert?.messageID;
+    const perFile = new Map<string, { patch: string; status?: string }[]>();
+    for (const m of messages) {
+      if (m.info.role !== "user" || (revertID && m.info.id >= revertID)) continue;
+      for (const d of m.info.summary?.diffs ?? []) {
+        if (!d.file || !d.patch) continue;
+        if (!perFile.has(d.file)) perFile.set(d.file, []);
+        perFile.get(d.file)!.push({ patch: d.patch, status: d.status });
+      }
+    }
+    const diff: { file: string; patch: string; additions: number; deletions: number; status: string }[] = [];
+    for (const [file, turns] of perFile) {
+      const uri = vscode.Uri.file(this.absolute(file));
+      let exists = true;
+      try {
+        await vscode.workspace.fs.stat(uri);
+      } catch {
+        exists = false;
+      }
+      const current = exists ? await this.readText(uri) : "";
+      let original: string | false = current;
+      for (const t of [...turns].reverse()) {
+        original = original === false ? false : this.unapply(original, t.patch);
+      }
+      const created = turns[0].status === "added";
+      if (original === false) {
+        // File changed outside OpenCode since; fall back to the latest turn's patch.
+        const last = turns[turns.length - 1];
+        diff.push({ file, patch: last.patch, status: last.status ?? "modified", ...this.countLines(last.patch) });
+        continue;
+      }
+      if (original === current && exists) continue;
+      const patch = createPatch(file, created ? "" : original, current);
+      const status = created ? "added" : !exists ? "deleted" : "modified";
+      diff.push({ file, patch, status, ...this.countLines(patch) });
+    }
+    if (sessionID !== this.sessionID) return;
+    this.post({ type: "event", event: { type: "session.diff", properties: { sessionID, diff } } });
+  }
+
+  private countLines(patch: string) {
+    let additions = 0;
+    let deletions = 0;
+    for (const hunk of parsePatch(patch)[0]?.hunks ?? []) {
+      for (const l of hunk.lines) {
+        if (l[0] === "+") additions++;
+        else if (l[0] === "-") deletions++;
+      }
+    }
+    return { additions, deletions };
+  }
+
+  private async readText(uri: vscode.Uri) {
+    try {
+      return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+    } catch {
+      return "";
+    }
+  }
+
+  /** Content of a file before an already-applied patch. */
+  private unapply(current: string, diffText: string): string | false {
+    const [patch] = parsePatch(diffText);
+    if (!patch) return false;
+    return applyPatch(current, reversePatch(patch));
+  }
+
   private async openDiff(filePath: string, diffText?: string, before?: string, after?: string) {
     const abs = this.absolute(filePath);
     const uri = vscode.Uri.file(abs);
-    let original = before;
-    let modified = after;
-    if (original === undefined || modified === undefined) {
-      let current = "";
-      try {
-        current = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
-      } catch {
-        current = "";
-      }
-      if (diffText) {
-        const patched = applyPatch(current, diffText);
-        if (patched !== false) {
-          original = current;
-          modified = patched;
-        } else {
-          // Patch already applied: reverse direction.
-          original = undefined;
-        }
-      }
-      if (original === undefined || modified === undefined) {
-        await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.One });
+    const name = path.basename(abs);
+    const show = async (left: vscode.Uri, right: vscode.Uri, title: string) => {
+      await vscode.commands.executeCommand("vscode.diff", left, right, title, {
+        viewColumn: vscode.ViewColumn.One,
+        preview: true,
+      });
+    };
+    if (before !== undefined && after !== undefined) {
+      return show(this.diffs.register(`${name} (before)`, before), this.diffs.register(`${name} (after)`, after), `${name} (OpenCode)`);
+    }
+    if (!diffText) {
+      await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.One });
+      return;
+    }
+    const current = await this.readText(uri);
+    // Not yet applied (a pending permission): show current vs proposed.
+    const proposed = applyPatch(current, diffText);
+    if (proposed !== false && proposed !== current) {
+      return show(uri, this.diffs.register(`${name} (proposed)`, proposed), `${name} ↔ proposed`);
+    }
+    // Already applied: show original vs the live, editable file.
+    const original = this.unapply(current, diffText);
+    if (original !== false) {
+      return show(this.diffs.register(`${name} (before)`, original), uri, `${name} (changes by OpenCode)`);
+    }
+    await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.One });
+  }
+
+  /** Throw away OpenCode's changes to one file, after confirming. */
+  private async discardFile(file: string, diffText: string, status?: string) {
+    const abs = this.absolute(file);
+    const uri = vscode.Uri.file(abs);
+    const choice = await vscode.window.showWarningMessage(
+      status === "added" ? `Delete ${file}? OpenCode created it.` : `Discard OpenCode's changes to ${file}?`,
+      { modal: true },
+      "Discard",
+    );
+    if (choice !== "Discard") return;
+    if (status === "added") {
+      await vscode.workspace.fs.delete(uri, { useTrash: true });
+    } else {
+      const original = this.unapply(await this.readText(uri), diffText);
+      if (original === false) {
+        vscode.window.showErrorMessage(`Couldn't discard changes to ${file}: it has changed since OpenCode edited it.`);
         return;
       }
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(original, "utf8"));
     }
-    const left = this.diffs.register(`${path.basename(abs)} (before)`, original);
-    const right = this.diffs.register(`${path.basename(abs)} (proposed)`, modified);
-    await vscode.commands.executeCommand(
-      "vscode.diff",
-      left,
-      right,
-      `${path.basename(abs)} ↔ OpenCode`,
-      { viewColumn: vscode.ViewColumn.One, preview: true },
-    );
+    await this.sendDiff();
   }
 
   // ------------------------------------------------------------------- events
@@ -437,6 +566,11 @@ export class ChatController implements vscode.Disposable {
     const sid = p.sessionID ?? p.info?.sessionID ?? p.part?.sessionID;
     if (!this.belongs(sid)) return;
     if (e.type === "session.updated" && sid === this.sessionID && p.info?.title) this.onTitle(p.info.title);
+    // OpenCode's own diff events are per turn; recompute the session-wide view instead.
+    if (sid === this.sessionID && (e.type === "session.diff" || e.type === "session.idle")) {
+      this.queueDiff();
+      if (e.type === "session.diff") return;
+    }
     // Only permission/question prompts from subagent sessions surface in the main view.
     if (sid !== this.sessionID && !e.type.startsWith("permission.") && !e.type.startsWith("question.")) return;
     this.post({ type: "event", event: e });
@@ -473,6 +607,7 @@ export class ChatController implements vscode.Disposable {
 
   dispose() {
     clearTimeout(this.selectionTimer);
+    clearTimeout(this.diffTimer);
     this.disposables.forEach((d) => d.dispose());
   }
 }
