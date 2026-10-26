@@ -288,8 +288,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .subagent-result { margin-top: 4px; }
 
 .tabbar {
-  display: flex; align-items: stretch; gap: 1px; padding: 0 6px; border-bottom: 1px solid var(--border);
-  overflow-x: auto; flex-shrink: 0; scrollbar-width: thin;
+  /* Sits in the header in place of the title; the negative margin puts the active underline on the header's border. */
+  display: flex; align-items: stretch; gap: 1px; flex: 1; min-width: 0; align-self: stretch; margin: -6px 0 -7px -6px;
+  overflow-x: auto; scrollbar-width: none;
 }
 .tab {
   display: flex; align-items: center; gap: 5px; padding: 5px 4px 5px 8px; max-width: 170px; min-width: 70px; cursor: pointer;
@@ -304,7 +305,6 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .tab-busy { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1s ease-in-out infinite; flex-shrink: 0; }
 .tab-attention, .tab-wt { display: inline-flex; flex-shrink: 0; }
 .tab-attention { color: var(--vscode-editorWarning-foreground, #cca700); }
-.tab-new { align-self: center; flex-shrink: 0; }
 
 .worktree-bar {
   display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 0.9em; flex-shrink: 0; flex-wrap: wrap;

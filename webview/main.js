@@ -140,6 +140,7 @@ app.innerHTML = `
       <span class="title-text" id="titleText">New conversation</span>
       <span class="chev">${icons.chevronDown}</span>
     </button>
+    <nav class="tabbar hidden" id="tabbar"></nav>
     <div class="header-actions">
       <button class="icon-btn" id="historyBtn" title="Past conversations">${icons.history}</button>
       <button class="icon-btn" id="newBtn" title="New conversation">${icons.plus}</button>
@@ -148,7 +149,6 @@ app.innerHTML = `
   </header>
   <div class="popover hidden" id="historyPop"></div>
   <div class="popover hidden" id="morePop"></div>
-  <nav class="tabbar hidden" id="tabbar"></nav>
   <div class="worktree-bar hidden" id="worktreeBar"></div>
   <main class="messages" id="messages"></main>
   <div class="bottom">
@@ -784,7 +784,12 @@ function setBusy(busy) {
 // -------------------------------------------------------------- header etc.
 
 function renderTitle() {
-  $("titleText").textContent = state.session?.title && !/^New session/i.test(state.session.title) ? state.session.title : "New conversation";
+  $("titleText").textContent = displayTitle(state.session?.title);
+}
+
+/** OpenCode names untitled sessions "New session - <date>" until the title agent runs. */
+function displayTitle(title) {
+  return title && !/^New session/i.test(title) ? title : "New conversation";
 }
 
 function agentColor(name) {
@@ -1574,6 +1579,12 @@ function toggleHistory(show) {
 }
 $("historyBtn").addEventListener("click", () => toggleHistory());
 $("titleBtn").addEventListener("click", () => toggleHistory());
+// The tab bar has no scrollbar; let the mouse wheel scroll it sideways.
+$("tabbar").addEventListener("wheel", (e) => {
+  if (!e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  e.preventDefault();
+  $("tabbar").scrollLeft += e.deltaY;
+}, { passive: false });
 $("newBtn").addEventListener("click", () => send({ type: "newSession" }));
 $("newBtn").title = "New conversation (opens a new tab if this one has messages)";
 $("moreBtn").addEventListener("click", () => {
@@ -1892,15 +1903,17 @@ function taskOwner(childID) {
 
 function renderTabs(tabs, active) {
   const bar = $("tabbar");
+  // One conversation shows its title; several show tabs in its place (the history button stays for the dropdown).
   bar.classList.toggle("hidden", tabs.length < 2);
+  $("titleBtn").classList.toggle("hidden", tabs.length >= 2);
   bar.innerHTML = "";
   for (const t of tabs) {
     const el = h(
       "div",
-      { class: `tab ${t.key === active ? "active" : ""} status-${t.status}`, title: t.title, onClick: () => t.key !== active && send({ type: "switchTab", key: t.key }) },
+      { class: `tab ${t.key === active ? "active" : ""} status-${t.status}`, title: displayTitle(t.title), onClick: () => t.key !== active && send({ type: "switchTab", key: t.key }) },
       t.status === "busy" ? h("span", { class: "tab-busy" }) : t.status === "attention" ? h("span", { class: "tab-attention", html: icons.shield }) : null,
       t.worktree ? h("span", { class: "tab-wt", title: `Worktree ${t.worktree.name}`, html: icons.branch }) : null,
-      h("span", { class: "tab-title" }, t.title),
+      h("span", { class: "tab-title" }, displayTitle(t.title)),
       h("button", {
         class: "tab-close",
         title: "Close tab (the conversation stays in history)",
@@ -1913,7 +1926,6 @@ function renderTabs(tabs, active) {
     );
     bar.append(el);
   }
-  bar.append(h("button", { class: "icon-btn tab-new", title: "New conversation tab", html: icons.plus, onClick: () => send({ type: "newSession" }) }));
   bar.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
