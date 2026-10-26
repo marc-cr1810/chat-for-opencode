@@ -912,49 +912,142 @@ function renderPermission(p) {
   return card;
 }
 
+/** Answers in progress, kept across re-renders (another card arriving rebuilds this one). */
+const questionDrafts = new Map();
+
+/**
+ * One question shows as before. Several are tabbed: a strip of headers (ticked once answered),
+ * one question at a time with Back / Next, and a final Review tab that submits them all.
+ */
 function renderQuestion(q) {
-  const answers = q.questions.map(() => new Set());
-  const customs = q.questions.map(() => "");
-  const card = h("div", { class: "card question" });
-  q.questions.forEach((qi, idx) => {
+  const qs = q.questions;
+  let d = questionDrafts.get(q.id);
+  if (!d) questionDrafts.set(q.id, (d = { answers: qs.map(() => new Set()), customs: qs.map(() => ""), step: 0 }));
+  const multi = qs.length > 1;
+  const review = qs.length; // index of the Review tab
+  const answered = (i) => d.answers[i].size > 0 || d.customs[i].trim() !== "";
+  const done = () => {
+    questionDrafts.delete(q.id);
+    state.questions = state.questions.filter((x) => x.id !== q.id);
+    renderCards();
+  };
+  const submit = () => {
+    send({ type: "questionReply", id: q.id, answers: d.answers.map((s, i) => (d.customs[i].trim() ? [...s, d.customs[i].trim()] : [...s])) });
+    done();
+  };
+  const skip = () => (send({ type: "questionReject", id: q.id }), done());
+
+  const card = h("div", { class: "card question", tabindex: "-1" });
+  const tabs = multi ? h("div", { class: "q-tabs", role: "tablist" }) : null;
+  const body = h("div", { class: "q-body" });
+  const actions = h("div", { class: "card-actions" });
+  if (tabs) card.append(tabs);
+  card.append(body, actions);
+
+  const go = (step) => {
+    d.step = Math.max(0, Math.min(review, step));
+    show();
+    setTimeout(() => (body.querySelector(".option") ?? actions.querySelector(".btn.primary"))?.focus(), 0);
+  };
+
+  const renderTabs = () => {
+    if (!tabs) return;
+    tabs.innerHTML = "";
+    [...qs.map((qi, i) => ({ label: qi.header || `Question ${i + 1}`, i })), { label: "Review", i: review }].forEach(({ label, i }) =>
+      tabs.append(
+        h(
+          "button",
+          { class: `q-tab${i === d.step ? " active" : ""}${i < review && answered(i) ? " answered" : ""}`, role: "tab", "aria-selected": String(i === d.step), onClick: () => go(i) },
+          i < review ? h("span", { class: "q-tick", html: answered(i) ? icons.check : "" }) : null,
+          label,
+        ),
+      ),
+    );
+  };
+
+  const renderOne = (idx) => {
+    const qi = qs[idx];
     const opts = h("div", { class: "options" });
-    qi.options.forEach((o, i) => {
+    const mark = () => {
+      opts.querySelectorAll(".option").forEach((b, j) => b.classList.toggle("selected", d.answers[idx].has(qi.options[j].label)));
+      renderTabs();
+    };
+    qi.options.forEach((o) => {
       const btn = h(
         "button",
         { class: "option", title: o.description },
         h("span", {}, h("span", { class: "opt-label" }, o.label), o.description ? h("span", { class: "opt-desc" }, o.description) : null),
       );
       btn.addEventListener("click", () => {
-        if (!qi.multiple) answers[idx].clear();
-        if (answers[idx].has(o.label)) answers[idx].delete(o.label);
-        else answers[idx].add(o.label);
-        opts.querySelectorAll(".option").forEach((b, j) => b.classList.toggle("selected", answers[idx].has(qi.options[j].label)));
-        if (!qi.multiple && q.questions.length === 1) submit();
+        if (!qi.multiple) d.answers[idx].clear();
+        if (d.answers[idx].has(o.label)) d.answers[idx].delete(o.label);
+        else d.answers[idx].add(o.label);
+        mark();
+        // Picking a single answer moves on, like Claude Code.
+        if (!qi.multiple && d.answers[idx].size) multi ? go(idx + 1) : submit();
       });
       opts.append(btn);
     });
-    card.append(h("div", { class: "q-header" }, qi.header), h("div", { class: "card-title" }, qi.question), opts);
+    // With tabs the header is already the tab label.
+    if (!multi && qi.header) body.append(h("div", { class: "q-header" }, qi.header));
+    body.append(h("div", { class: "card-title" }, qi.question), opts);
+    if (qi.multiple) body.append(h("div", { class: "q-hint" }, "Choose any that apply"));
     if (qi.custom !== false) {
-      const t = h("input", { class: "custom", placeholder: "Something else…" });
-      t.addEventListener("input", () => (customs[idx] = t.value));
-      t.addEventListener("keydown", (e) => e.key === "Enter" && submit());
-      card.append(t);
+      const t = h("input", { class: "custom", placeholder: "Something else…", value: d.customs[idx] });
+      t.addEventListener("input", () => ((d.customs[idx] = t.value), renderTabs()));
+      t.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        multi ? go(idx + 1) : submit();
+      });
+      body.append(t);
     }
-  });
-  const submit = () => {
-    const out = answers.map((s, i) => (customs[i].trim() ? [...s, customs[i].trim()] : [...s]));
-    send({ type: "questionReply", id: q.id, answers: out });
-    state.questions = state.questions.filter((x) => x.id !== q.id);
-    renderCards();
+    mark();
   };
-  card.append(
-    h(
-      "div",
-      { class: "card-actions" },
-      h("button", { class: "btn primary", onClick: submit }, "Submit"),
-      h("button", { class: "btn", onClick: () => (send({ type: "questionReject", id: q.id }), (state.questions = state.questions.filter((x) => x.id !== q.id)), renderCards()) }, "Skip"),
-    ),
-  );
+
+  const renderReview = () => {
+    body.append(h("div", { class: "card-title" }, "Review your answers"));
+    const list = h("div", { class: "q-review" });
+    qs.forEach((qi, i) => {
+      const parts = [...d.answers[i], ...(d.customs[i].trim() ? [d.customs[i].trim()] : [])];
+      list.append(
+        h(
+          "button",
+          { class: "q-review-row", onClick: () => go(i), title: "Change this answer" },
+          h("span", { class: "q-review-q" }, qi.question),
+          h("span", { class: `q-review-a${parts.length ? "" : " missing"}` }, parts.length ? parts.join(", ") : "Not answered"),
+        ),
+      );
+    });
+    body.append(list);
+  };
+
+  const show = () => {
+    body.innerHTML = "";
+    actions.innerHTML = "";
+    renderTabs();
+    if (d.step === review) renderReview();
+    else renderOne(d.step);
+    if (multi) {
+      actions.append(h("button", { class: "btn", disabled: d.step === 0 ? "" : undefined, onClick: () => go(d.step - 1) }, "Back"));
+      actions.append(
+        d.step === review
+          ? h("button", { class: "btn primary", onClick: submit }, "Submit")
+          : h("button", { class: "btn primary", onClick: () => go(d.step + 1) }, d.step === review - 1 ? "Review" : "Next"),
+      );
+    } else {
+      actions.append(h("button", { class: "btn primary", onClick: submit }, "Submit"));
+    }
+    actions.append(h("button", { class: "btn q-skip", onClick: skip, title: "Dismiss without answering" }, "Skip"));
+  };
+
+  // ←/→ switch questions, except while typing an answer.
+  card.addEventListener("keydown", (e) => {
+    if (!multi || e.target instanceof HTMLInputElement || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === "ArrowRight") e.preventDefault(), go(d.step + 1);
+    if (e.key === "ArrowLeft") e.preventDefault(), go(d.step - 1);
+  });
+  show();
   return card;
 }
 
