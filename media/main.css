@@ -49,6 +49,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 .title-btn:hover { background: var(--hover); }
 .title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title-others { display: inline-flex; align-items: center; }
+.pop-head { padding: 6px 8px 2px; color: var(--muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
 .title-btn .chev { color: var(--muted); display: inline-flex; }
 .header-actions { display: flex; gap: 2px; flex-shrink: 0; }
 
@@ -287,21 +289,6 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .sub-step .tool-name { font-weight: 500; }
 .subagent-result { margin-top: 4px; }
 
-.tabbar {
-  /* Sits in the header in place of the title; the negative margin puts the active underline on the header's border. */
-  display: flex; align-items: stretch; gap: 1px; flex: 1; min-width: 0; align-self: stretch; margin: -6px 0 -7px -6px;
-  overflow-x: auto; scrollbar-width: none;
-}
-.tab {
-  display: flex; align-items: center; gap: 5px; padding: 5px 4px 5px 8px; max-width: 170px; min-width: 70px; cursor: pointer;
-  color: var(--muted); border-bottom: 2px solid transparent; font-size: 0.9em; flex-shrink: 0;
-}
-.tab:hover { color: var(--fg); background: var(--hover); }
-.tab.active { color: var(--fg); border-bottom-color: var(--accent); }
-.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.tab-close { display: inline-flex; padding: 2px; border-radius: 3px; visibility: hidden; color: var(--muted); }
-.tab:hover .tab-close, .tab.active .tab-close { visibility: visible; }
-.tab-close:hover { background: var(--hover); color: var(--fg); }
 .tab-busy { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1s ease-in-out infinite; flex-shrink: 0; }
 .tab-attention, .tab-wt { display: inline-flex; flex-shrink: 0; }
 .tab-attention { color: var(--vscode-editorWarning-foreground, #cca700); }

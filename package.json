@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
   "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",

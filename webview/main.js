@@ -83,6 +83,9 @@ const state = {
   lastActivity: 0,
   /** Set when the timeout stopped a run: { model, secs }. Cleared by the next message. */
   timedOut: null,
+  /** Open conversations from the extension: [{ key, sessionID, title, status, worktree }], and the active key. */
+  tabs: [],
+  activeTab: null,
   /** OpenCode is waiting to retry a failed request: { attempt, message, next, action? } from session.status. */
   retry: null,
   readOnlyAgents: ["plan"],
@@ -138,9 +141,9 @@ app.innerHTML = `
   <header class="header">
     <button class="title-btn" id="titleBtn" title="Past conversations">
       <span class="title-text" id="titleText">New conversation</span>
+      <span class="title-others" id="titleOthers"></span>
       <span class="chev">${icons.chevronDown}</span>
     </button>
-    <nav class="tabbar hidden" id="tabbar"></nav>
     <div class="header-actions">
       <button class="icon-btn" id="historyBtn" title="Past conversations">${icons.history}</button>
       <button class="icon-btn" id="newBtn" title="New conversation">${icons.plus}</button>
@@ -1579,14 +1582,7 @@ function toggleHistory(show) {
 }
 $("historyBtn").addEventListener("click", () => toggleHistory());
 $("titleBtn").addEventListener("click", () => toggleHistory());
-// The tab bar has no scrollbar; let the mouse wheel scroll it sideways.
-$("tabbar").addEventListener("wheel", (e) => {
-  if (!e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-  e.preventDefault();
-  $("tabbar").scrollLeft += e.deltaY;
-}, { passive: false });
 $("newBtn").addEventListener("click", () => send({ type: "newSession" }));
-$("newBtn").title = "New conversation (opens a new tab if this one has messages)";
 $("moreBtn").addEventListener("click", () => {
   const pop = $("morePop");
   pop.classList.toggle("hidden");
@@ -1615,7 +1611,16 @@ function renderSessions(list) {
   const draw = () => {
     listEl.innerHTML = "";
     const q = search.value.toLowerCase();
-    const items = list.filter((s) => (s.title || "").toLowerCase().includes(q));
+    const match = (title) => displayTitle(title).toLowerCase().includes(q);
+    // Conversations still running (or waiting, or in a worktree) stay open in the background; list them first.
+    const open = state.tabs.length > 1 ? state.tabs.filter((t) => match(t.title)) : [];
+    if (open.length) {
+      listEl.append(h("div", { class: "pop-head" }, "Open"));
+      for (const t of open) listEl.append(openItem(t));
+      listEl.append(h("div", { class: "pop-head" }, "Recent"));
+    }
+    const openIDs = new Set(open.map((t) => t.sessionID));
+    const items = list.filter((s) => !openIDs.has(s.id) && match(s.title));
     if (!items.length) listEl.append(h("div", { class: "pop-loading" }, "No conversations"));
     for (const s of items) {
       listEl.append(
@@ -1901,32 +1906,50 @@ function taskOwner(childID) {
   return undefined;
 }
 
+function openItem(t) {
+  const pop = $("historyPop");
+  return h(
+    "div",
+    { class: `pop-item session-item ${t.key === state.activeTab ? "current" : ""}`, onClick: () => (t.key !== state.activeTab && send({ type: "switchTab", key: t.key }), pop.classList.add("hidden")) },
+    tabStatus(t),
+    h("span", { class: "s-title" }, displayTitle(t.title)),
+    h("span", { class: "s-time" }, t.status === "attention" ? "needs you" : t.status === "busy" ? "working" : t.worktree ? t.worktree.name : ""),
+    h("button", {
+      class: "icon-btn s-del",
+      title: "Close (the conversation stays in history)",
+      html: icons.x,
+      onClick: (e) => {
+        e.stopPropagation();
+        pop.classList.add("hidden");
+        send({ type: "closeTab", key: t.key });
+      },
+    }),
+  );
+}
+
+function tabStatus(t) {
+  if (t.status === "attention") return h("span", { class: "tab-attention", html: icons.shield });
+  if (t.status === "busy") return h("span", { class: "tab-busy" });
+  if (t.worktree) return h("span", { class: "tab-wt", html: icons.branch });
+  return null;
+}
+
+/** No tab strip, as in Claude Code: the title shows when another open conversation is working or needs you. */
 function renderTabs(tabs, active) {
-  const bar = $("tabbar");
-  // One conversation shows its title; several show tabs in its place (the history button stays for the dropdown).
-  bar.classList.toggle("hidden", tabs.length < 2);
-  $("titleBtn").classList.toggle("hidden", tabs.length >= 2);
-  bar.innerHTML = "";
-  for (const t of tabs) {
-    const el = h(
-      "div",
-      { class: `tab ${t.key === active ? "active" : ""} status-${t.status}`, title: displayTitle(t.title), onClick: () => t.key !== active && send({ type: "switchTab", key: t.key }) },
-      t.status === "busy" ? h("span", { class: "tab-busy" }) : t.status === "attention" ? h("span", { class: "tab-attention", html: icons.shield }) : null,
-      t.worktree ? h("span", { class: "tab-wt", title: `Worktree ${t.worktree.name}`, html: icons.branch }) : null,
-      h("span", { class: "tab-title" }, displayTitle(t.title)),
-      h("button", {
-        class: "tab-close",
-        title: "Close tab (the conversation stays in history)",
-        html: icons.x,
-        onClick: (e) => {
-          e.stopPropagation();
-          send({ type: "closeTab", key: t.key });
-        },
-      }),
-    );
-    bar.append(el);
-  }
-  bar.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  state.tabs = tabs;
+  state.activeTab = active;
+  const others = tabs.filter((t) => t.key !== active);
+  const attention = others.filter((t) => t.status === "attention").length;
+  const busy = others.filter((t) => t.status === "busy").length;
+  const el = $("titleOthers");
+  el.innerHTML = "";
+  if (attention) el.append(h("span", { class: "tab-attention", html: icons.shield }));
+  else if (busy) el.append(h("span", { class: "tab-busy" }));
+  $("titleBtn").title = attention
+    ? `${attention} other conversation${attention > 1 ? "s" : ""} need${attention > 1 ? "" : "s"} you`
+    : busy
+      ? `${busy} other conversation${busy > 1 ? "s are" : " is"} working`
+      : "Past conversations";
 }
 
 function renderWorktreeBar() {

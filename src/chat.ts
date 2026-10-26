@@ -199,6 +199,7 @@ export class ChatController implements vscode.Disposable {
       active: this.activeKey,
       tabs: this.tabs.map((t) => ({
         key: t.key,
+        sessionID: t.sessionID,
         title: t.title,
         status: this.statusOf(t),
         worktree: t.worktree ? { name: t.worktree.name, branch: t.worktree.branch } : undefined,
@@ -286,7 +287,7 @@ export class ChatController implements vscode.Disposable {
   newSession(worktree?: Worktree) {
     const empty = !worktree && !this.tab.sessionID ? this.tab : undefined;
     if (empty) this.activeKey = empty.key;
-    else this.addTab(worktree ? { directory: worktree.directory, worktree, title: `Worktree ${worktree.name}` } : {});
+    else this.leave(this.tab), this.addTab(worktree ? { directory: worktree.directory, worktree, title: `Worktree ${worktree.name}` } : {});
     this.post({ type: "session", session: null, messages: [], worktree: this.tab.worktree });
     this.post({ type: "event", event: { type: "session.diff", properties: { diff: [] } } });
     this.sendTabs();
@@ -505,9 +506,21 @@ export class ChatController implements vscode.Disposable {
     for (const p of this.pendingPrompts.splice(0)) this.post({ type: "externalPrompt", text: p.text, mentions: p.mentions });
   }
 
+  /**
+   * Switching away from a conversation keeps it open only while it still needs the panel: it's running,
+   * waiting for an answer, or in a worktree. Anything else is just history, like Claude Code's dropdown.
+   */
+  private leave(tab: Tab | undefined) {
+    if (!tab || tab.busy || tab.pending.size || tab.worktree) return;
+    this.tabs = this.tabs.filter((t) => t !== tab);
+  }
+
   private async switchTab(key: string) {
     const tab = this.tabs.find((t) => t.key === key);
     if (!tab) return;
+    // Not this.tab: after closeTab the active key is gone and this.tab falls back to another tab.
+    const prev = this.tabs.find((t) => t.key === this.activeKey);
+    if (prev !== tab) this.leave(prev);
     this.activeKey = key;
     if (tab.sessionID) await this.loadSession(tab.sessionID);
     else this.post({ type: "session", session: null, messages: [], worktree: tab.worktree });
@@ -530,7 +543,7 @@ export class ChatController implements vscode.Disposable {
     const existing = this.tabs.find((t) => t.sessionID === id);
     if (existing) return this.switchTab(existing.key);
     // Only reuse an empty, non-worktree draft; otherwise open a fresh tab.
-    if (this.tab.sessionID || this.tab.worktree) this.addTab();
+    if (this.tab.sessionID || this.tab.worktree) this.leave(this.tab), this.addTab();
     const session = await this.server.request<any>("GET", `/session/${id}`);
     this.tab.sessionID = id;
     this.tab.directory = session.directory || this.server.directory;

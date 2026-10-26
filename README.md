@@ -21,7 +21,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Undo to here** on any of your messages: rolls the conversation back and restores the files OpenCode changed (with Redo)
 - **Changes panel** listing every file the session changed, with +/- counts, native diff view and per-file discard
 - **Context meter** showing how full the model's context is and what the session has cost; click to compact
-- **Conversation tabs**: run several conversations in parallel; with more than one open, tabs replace the title and show when one is working or needs approval
+- **Background conversations**: like Claude Code, one conversation shows at a time with a dropdown to switch. A conversation that is still running or waiting for approval keeps going when you switch away; the dropdown lists it under Open, and the title shows when one needs you
 - **Edit and resend** any earlier message (undoes from that point, then sends the edited text)
 - **Subagent view**: steps run by `explore` / `general` subagents stream in, nested under the task
 - **Worktrees**: start a conversation in an isolated git worktree, then apply its changes to your workspace or throw them away
