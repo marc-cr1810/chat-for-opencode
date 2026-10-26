@@ -67,6 +67,8 @@ const state = {
   agents: ["build", "plan"],
   agentColors: {},
   autoEdit: false,
+  autoRead: false,
+  readOnlyAgents: ["plan"],
   models: [],
   model: saved.model || null,
   commands: [],
@@ -699,11 +701,16 @@ function renderModeBtn() {
   btn.innerHTML = `<span class="agent-name">${escapeHtml(state.agent)}</span>`;
   // The whole panel takes on the active agent's colour.
   document.body.style.setProperty("--accent", agentColor(state.agent));
+  // Read-only agents (plan) can't edit, so the toggle is for read-only shell commands instead.
   const edits = $("editsBtn");
-  edits.classList.toggle("hidden", state.agent === "plan");
-  edits.innerHTML = `${state.autoEdit ? icons.zap : icons.shield}<span>${state.autoEdit ? "Auto-approve edits" : "Approve edits"}</span>`;
-  edits.classList.toggle("on", state.autoEdit);
-  edits.title = state.autoEdit ? "Edits are applied without asking — click to require approval" : "OpenCode asks before editing files — click to auto-approve";
+  const readOnly = state.readOnlyAgents.includes(state.agent);
+  const on = readOnly ? state.autoRead : state.autoEdit;
+  const [onLabel, offLabel, onTitle, offTitle] = readOnly
+    ? ["Auto read-only", "Approve commands", "Read-only commands (ls, grep, git log…) run without asking — click to approve each", "OpenCode asks before every shell command — click to run read-only ones without asking"]
+    : ["Auto-approve edits", "Approve edits", "Edits are applied without asking — click to require approval", "OpenCode asks before editing files — click to auto-approve"];
+  edits.innerHTML = `${on ? icons.zap : icons.shield}<span>${on ? onLabel : offLabel}</span>`;
+  edits.classList.toggle("on", on);
+  edits.title = on ? onTitle : offTitle;
 }
 
 function renderModelBtn() {
@@ -1277,6 +1284,12 @@ function startEdit(id, bubble, text) {
   area.setSelectionRange(area.value.length, area.value.length);
 }
 
+function setAutoRead(on) {
+  state.autoRead = on;
+  renderModeBtn();
+  send({ type: "setAutoRead", autoRead: on });
+}
+
 function setAutoEdit(on) {
   state.autoEdit = on;
   renderModeBtn();
@@ -1345,7 +1358,7 @@ input.addEventListener("paste", (e) => {
 
 $("sendBtn").addEventListener("click", () => (state.busy && !input.value.trim() ? send({ type: "abort" }) : submit()));
 $("modeBtn").addEventListener("click", cycleAgent);
-$("editsBtn").addEventListener("click", () => setAutoEdit(!state.autoEdit));
+$("editsBtn").addEventListener("click", () => (state.readOnlyAgents.includes(state.agent) ? setAutoRead(!state.autoRead) : setAutoEdit(!state.autoEdit)));
 $("selBtn").addEventListener("click", () => ((state.includeSelection = !state.includeSelection), renderSelBtn()));
 $("atBtn").addEventListener("click", () => {
   const pos = input.selectionStart;
@@ -1647,6 +1660,8 @@ window.addEventListener("message", (ev) => {
     case "init":
       state.ready = true;
       state.autoEdit = msg.autoEdit;
+      state.autoRead = !!msg.autoRead;
+      state.readOnlyAgents = msg.readOnlyAgents || ["plan"];
       state.agents = msg.agents.length ? msg.agents : ["build"];
       state.agentColors = msg.agentColors || {};
       if (!state.agents.includes(state.agent)) state.agent = state.agents[0];

@@ -48,6 +48,7 @@ whatever providers, models, agents and commands you've configured for the openco
 
 - `opencode.binaryPath` – path to `opencode` (default: `opencode` on PATH)
 - `opencode.autoApproveEdits` – apply edits without asking (shell commands always ask)
+- `opencode.autoApproveReadOnly` – in plan (and other read-only agents), run read-only shell commands like `ls`, `grep` and `git log` without asking; redirects and write/exec flags still ask
 - `opencode.model` – default `provider/model`
 - `opencode.notifications` – notify when a task finishes or needs approval while hidden (default on)
 - `opencode.preferredLocation` – `sidebar` (default, the secondary side bar) | `panel` (editor tab)

@@ -4,7 +4,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { applyPatch } from "diff";
 import { collectTurns, cumulativeChange, FileChange, unapply } from "./patches";
-import { deniedByAgent, Rule, sessionRules } from "./permissions";
+import { deniedByAgent, isReadOnlyAgent, Rule, sessionRules } from "./permissions";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
 
@@ -87,6 +87,8 @@ export class ChatController implements vscode.Disposable {
   private tabs: Tab[] = [];
   private activeKey = "";
   private autoEdit: boolean;
+  /** Run read-only shell commands without asking, for read-only agents (plan). */
+  private autoRead: boolean;
   private agent = "build";
   /** Each agent's own permission rules, from /agent. */
   private agentRules = new Map<string, Rule[]>();
@@ -106,6 +108,7 @@ export class ChatController implements vscode.Disposable {
     private readonly host: ChatHost,
   ) {
     this.autoEdit = vscode.workspace.getConfiguration("opencode").get<boolean>("autoApproveEdits") ?? false;
+    this.autoRead = vscode.workspace.getConfiguration("opencode").get<boolean>("autoApproveReadOnly") ?? false;
     this.addTab();
     liveControllers.add(this);
     webview.options = {
@@ -185,11 +188,20 @@ export class ChatController implements vscode.Disposable {
   private async applyRules(tab: Tab, agent: string) {
     if (!tab.sessionID) return;
     tab.agent = agent;
-    const key = `${tab.sessionID}|${agent}|${this.autoEdit}`;
+    const key = this.rulesKey(tab.sessionID, agent);
     if (tab.rulesKey === key) return;
-    const permission = sessionRules(this.autoEdit, this.agentRules.get(agent));
+    const permission = this.rulesFor(agent);
     await this.req("PATCH", `/session/${tab.sessionID}`, { permission }, {}, tab.directory);
     tab.rulesKey = key;
+  }
+
+  private rulesFor(agent: string) {
+    const rules = this.agentRules.get(agent) ?? [];
+    return sessionRules(this.autoEdit, rules, this.autoRead && isReadOnlyAgent(rules));
+  }
+
+  private rulesKey(sessionID: string, agent: string) {
+    return `${sessionID}|${agent}|${this.autoEdit}|${this.autoRead}`;
   }
 
   /** Reject a request the running agent's own rules deny; the session only asks for those (see sessionRules). */
@@ -331,6 +343,10 @@ export class ChatController implements vscode.Disposable {
         this.autoEdit = !!msg.autoEdit;
         await this.applyRules(this.tab, this.tab.agent ?? this.agent);
         return;
+      case "setAutoRead":
+        this.autoRead = !!msg.autoRead;
+        await this.applyRules(this.tab, this.tab.agent ?? this.agent);
+        return;
       case "permissionReply":
         await this.req("POST", `/permission/${msg.id}/reply`, { reply: msg.reply, message: msg.message || undefined });
         this.resolvePending(msg.id);
@@ -432,6 +448,8 @@ export class ChatController implements vscode.Disposable {
     this.post({
       type: "init",
       autoEdit: this.autoEdit,
+      autoRead: this.autoRead,
+      readOnlyAgents: agents.filter((a) => isReadOnlyAgent(a.permission ?? [])).map((a) => a.name),
       models,
       defaultModel,
       agents: agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name),
@@ -483,10 +501,10 @@ export class ChatController implements vscode.Disposable {
   private async ensureSession(): Promise<string> {
     const tab = this.tab;
     if (tab.sessionID) return tab.sessionID;
-    const session = await this.req<any>("POST", "/session", { permission: sessionRules(this.autoEdit, this.agentRules.get(this.agent)) });
+    const session = await this.req<any>("POST", "/session", { permission: this.rulesFor(this.agent) });
     tab.sessionID = session.id;
     tab.agent = this.agent;
-    tab.rulesKey = `${session.id}|${this.agent}|${this.autoEdit}`;
+    tab.rulesKey = this.rulesKey(session.id, this.agent);
     tab.children.clear();
     this.post({ type: "session", session, messages: [], worktree: tab.worktree });
     this.sendTabs();
