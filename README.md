@@ -57,7 +57,7 @@ whatever providers, models, agents and commands you've configured for the openco
 ```bash
 npm install
 npm run package   # produces opencode-vscode-<version>.vsix
-code --install-extension opencode-vscode-0.3.1.vsix
+code --install-extension opencode-vscode-0.3.2.vsix
 ```
 
 For development, open this folder in VS Code and press F5.

@@ -216,6 +216,8 @@ function flush() {
     scrollToBottom();
     return;
   }
+  // Inner scroll boxes (reasoning, command output…) that were scrolled to the bottom stay there.
+  const pinned = [...messagesEl.querySelectorAll(SCROLL_BOXES)].filter(isScrolledToBottom);
   for (const id of renderQueued) {
     const old = messagesEl.querySelector(`[data-mid="${id}"]`);
     if (isReverted(id) || !state.messages.has(id)) {
@@ -233,10 +235,14 @@ function flush() {
     }
   }
   renderQueued.clear();
+  for (const box of pinned) if (box.isConnected) box.scrollTop = box.scrollHeight;
   updateStatusRow();
   renderContext();
   scrollToBottom();
 }
+
+const SCROLL_BOXES = ".thinking, .tool-output, .subagent-steps, .summary-row .markdown, .diff";
+const isScrolledToBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 
 const isReverted = (id) => !!state.session?.revert && id >= state.session.revert.messageID;
 
@@ -395,7 +401,7 @@ function renderPart(p) {
       if (!p.text?.trim()) return null;
       const done = !!p.time?.end;
       const secs = done ? Math.max(1, Math.round((p.time.end - p.time.start) / 1000)) : null;
-      return collapsible(p.id, h("span", { class: "thinking-label" }, h("span", { class: "tool-icon", html: icons.sparkle }), done ? `Reasoning · ${secs}s` : "Reasoning…"), h("div", { class: "markdown thinking", html: md(p.text) }), "thinking-row", false);
+      return collapsible(p.id, h("span", { class: "thinking-label" }, h("span", { class: "tool-icon", html: icons.sparkle }), done ? `Reasoning · ${secs}s` : "Reasoning…"), h("div", { class: "markdown thinking", html: md(p.text) }), done ? "thinking-row" : "thinking-row live", false);
     }
     case "tool":
       return renderTool(p);
@@ -415,6 +421,10 @@ function toggleOpen(el) {
   const open = !el.classList.contains("open");
   el.classList.toggle("open", open);
   el.dataset.user = open ? "open" : "closed";
+  // Opening something still streaming jumps to the newest text so it keeps following.
+  if (open && el.classList.contains("live")) {
+    for (const box of el.querySelectorAll(SCROLL_BOXES)) box.scrollTop = box.scrollHeight;
+  }
 }
 
 function collapsible(pid, head, body, cls, open) {
