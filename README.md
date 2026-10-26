@@ -11,6 +11,8 @@ An unofficial VS Code chat panel for [OpenCode](https://opencode.ai).
 It starts `opencode serve` in your workspace and talks to it over its local HTTP API, so it uses
 whatever providers, models, agents and commands you've configured for the opencode CLI.
 
+![A walkthrough of a codebase in plan mode, a two-part question from the agent, and an edit waiting for approval](docs/images/hero.jpg)
+
 ## Features
 
 - Chat in an editor tab (button in the editor title bar) or in the secondary side bar (right-hand side, next to other chat extensions)
@@ -39,6 +41,8 @@ whatever providers, models, agents and commands you've configured for the openco
 - Questions asked by the agent rendered as option cards, tabbed with Back / Next and a review step when there are several
 - **Stall warning**: when the model goes quiet (not counting running tools), the status line says so, with Stop and Retry. An optional timeout stops it for you
 - **Rate limits**: when OpenCode is waiting to retry (a rate limit, an overloaded provider, Zen's free limit), the status line says why and when it tries again, instead of looking stalled
+
+<img src="docs/images/conversations.jpg" width="400" alt="The conversation dropdown: open conversations with their status, then recent ones">
 
 ## Keybindings
 

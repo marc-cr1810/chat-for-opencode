@@ -341,9 +341,10 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   text-transform: uppercase; background: var(--accent); transition: background 0.15s; color: var(--vscode-editor-background, #111);
 }
 .agent-pill:hover { filter: brightness(1.1); }
-.edits-pill { flex-shrink: 0; }
+/* Shrinks (label ellipsized) rather than running under the buttons on the right in a narrow side bar. */
+.edits-pill { min-width: 26px; flex-shrink: 1; }
 .edits-pill.on { color: var(--accent); }
-.sel-pill { min-width: 0; flex-shrink: 1; }
+.sel-pill { min-width: 0; flex-shrink: 2; }
 .sel-pill.off { opacity: 0.6; text-decoration: line-through; }
 .model-pill { max-width: 160px; }
 .send-btn {

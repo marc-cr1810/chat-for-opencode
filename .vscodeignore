@@ -8,3 +8,4 @@ tsconfig.json
 .github/**
 test/**
 vitest.config.*
+docs/**
