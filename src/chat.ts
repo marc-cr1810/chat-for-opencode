@@ -79,6 +79,8 @@ const COMMANDS_KEY = "opencode.commandMessages";
 let tabCounter = 0;
 /** Shared across controllers so one event shown in two views notifies only once. */
 const recentNotifications = new Map<string, number>();
+/** Every live controller, so a notification can check whether any visible panel already shows the session. */
+const liveControllers = new Set<ChatController>();
 
 /** Connects one webview (side bar or editor tab) to a set of OpenCode conversation tabs. */
 export class ChatController implements vscode.Disposable {
@@ -105,6 +107,7 @@ export class ChatController implements vscode.Disposable {
   ) {
     this.autoEdit = vscode.workspace.getConfiguration("opencode").get<boolean>("autoApproveEdits") ?? false;
     this.addTab();
+    liveControllers.add(this);
     webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, "dist"), vscode.Uri.joinPath(extensionUri, "media")],
@@ -945,8 +948,9 @@ export class ChatController implements vscode.Disposable {
 
   private notify(tab: Tab, kind: "done" | "attention") {
     if (!vscode.workspace.getConfiguration("opencode").get<boolean>("notifications", true)) return;
-    const visible = this.host.isVisible() && vscode.window.state.focused && tab.key === this.activeKey;
-    if (visible) return;
+    // A visible panel with this conversation open already shows its state (the tab strip marks busy / needs you).
+    const shown = [...liveControllers].some((c) => c.host.isVisible() && c.tabs.some((t) => t === tab || (!!tab.sessionID && t.sessionID === tab.sessionID)));
+    if (shown) return;
     // The same session can be open in the side bar and an editor tab; notify once.
     const key = `${kind}:${tab.sessionID}`;
     const now = Date.now();
@@ -1056,6 +1060,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   dispose() {
+    liveControllers.delete(this);
     clearTimeout(this.selectionTimer);
     clearTimeout(this.diffTimer);
     this.disposables.forEach((d) => d.dispose());

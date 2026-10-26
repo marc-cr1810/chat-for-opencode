@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
   "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -177,7 +177,7 @@
         "opencode.notifications": {
           "type": "boolean",
           "default": true,
-          "description": "Show a notification when OpenCode finishes or needs approval while its panel is hidden."
+          "description": "Show a notification when OpenCode finishes or needs approval while no visible OpenCode panel has that conversation open."
         }
       }
     },
