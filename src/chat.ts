@@ -4,6 +4,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { applyPatch } from "diff";
 import { collectTurns, cumulativeChange, FileChange, unapply } from "./patches";
+import { deniedByAgent, Rule, sessionRules } from "./permissions";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
 
@@ -42,6 +43,10 @@ interface Tab {
   directory: string;
   worktree?: Worktree;
   children: Set<string>;
+  /** Agent whose rules the session currently carries. */
+  agent?: string;
+  /** Agent and toggle those rules were written for; the server appends, so skip rewriting the same ones. */
+  rulesKey?: string;
 }
 
 export interface ChatStatus {
@@ -71,14 +76,6 @@ interface CommandMeta {
 
 const COMMANDS_KEY = "opencode.commandMessages";
 
-/** Session permission rules. Shell commands always ask; edits ask unless auto-approved. */
-function rulesFor(autoEdit: boolean) {
-  return [
-    { permission: "edit", pattern: "*", action: autoEdit ? "allow" : "ask" },
-    { permission: "bash", pattern: "*", action: "ask" },
-  ];
-}
-
 let tabCounter = 0;
 /** Shared across controllers so one event shown in two views notifies only once. */
 const recentNotifications = new Map<string, number>();
@@ -89,6 +86,8 @@ export class ChatController implements vscode.Disposable {
   private activeKey = "";
   private autoEdit: boolean;
   private agent = "build";
+  /** Each agent's own permission rules, from /agent. */
+  private agentRules = new Map<string, Rule[]>();
   private model: string | undefined;
   private disposables: vscode.Disposable[] = [];
   private selectionTimer: NodeJS.Timeout | undefined;
@@ -177,6 +176,27 @@ export class ChatController implements vscode.Disposable {
   /** Request scoped to the active tab's directory. */
   private req<T = any>(method: string, p: string, body?: unknown, query: Record<string, any> = {}, dir = this.dir) {
     return this.server.request<T>(method, p, body, { ...query, directory: dir });
+  }
+
+  /** Put the extension's rules for `agent` on the tab's session, keeping anything the agent denies. */
+  private async applyRules(tab: Tab, agent: string) {
+    if (!tab.sessionID) return;
+    tab.agent = agent;
+    const key = `${tab.sessionID}|${agent}|${this.autoEdit}`;
+    if (tab.rulesKey === key) return;
+    const permission = sessionRules(this.autoEdit, this.agentRules.get(agent));
+    await this.req("PATCH", `/session/${tab.sessionID}`, { permission }, {}, tab.directory);
+    tab.rulesKey = key;
+  }
+
+  /** Reject a request the running agent's own rules deny; the session only asks for those (see sessionRules). */
+  private rejectIfDenied(tab: Tab, p: any): boolean {
+    const rules = tab.agent ? this.agentRules.get(tab.agent) : undefined;
+    const patterns: string[] = p.patterns ?? [];
+    if (!rules || p.sessionID !== tab.sessionID || !deniedByAgent(rules, p.permission, patterns)) return false;
+    const message = `The ${tab.agent} agent is not allowed to do this (${p.permission}: ${patterns.join(", ")}).`;
+    this.req("POST", `/permission/${p.id}/reply`, { reply: "reject", message }, {}, tab.directory).catch(() => undefined);
+    return true;
   }
 
   private post(msg: any) {
@@ -306,7 +326,7 @@ export class ChatController implements vscode.Disposable {
       }
       case "setAutoEdit":
         this.autoEdit = !!msg.autoEdit;
-        if (this.sessionID) await this.req("PATCH", `/session/${this.sessionID}`, { permission: rulesFor(this.autoEdit) });
+        await this.applyRules(this.tab, this.tab.agent ?? this.agent);
         return;
       case "permissionReply":
         await this.req("POST", `/permission/${msg.id}/reply`, { reply: msg.reply, message: msg.message || undefined });
@@ -383,6 +403,7 @@ export class ChatController implements vscode.Disposable {
       this.server.request<any[]>("GET", "/agent"),
       this.server.request<any[]>("GET", "/command"),
     ]);
+    this.agentRules = new Map(agents.map((a) => [a.name, a.permission ?? []]));
     const models: { providerID: string; providerName: string; modelID: string; name: string; context?: number }[] = [];
     for (const p of providers.providers ?? []) {
       for (const [id, m] of Object.entries<any>(p.models ?? {})) {
@@ -459,8 +480,10 @@ export class ChatController implements vscode.Disposable {
   private async ensureSession(): Promise<string> {
     const tab = this.tab;
     if (tab.sessionID) return tab.sessionID;
-    const session = await this.req<any>("POST", "/session", { permission: rulesFor(this.autoEdit) });
+    const session = await this.req<any>("POST", "/session", { permission: sessionRules(this.autoEdit, this.agentRules.get(this.agent)) });
     tab.sessionID = session.id;
+    tab.agent = this.agent;
+    tab.rulesKey = `${session.id}|${this.agent}|${this.autoEdit}`;
     tab.children.clear();
     this.post({ type: "session", session, messages: [], worktree: tab.worktree });
     this.sendTabs();
@@ -494,9 +517,11 @@ export class ChatController implements vscode.Disposable {
       this.req<any[]>("GET", "/question").catch(() => []),
     ]);
     const mine = (sid: string) => sid === id || tab.children.has(sid);
-    for (const p of perms) if (mine(p.sessionID)) this.post({ type: "event", event: { type: "permission.asked", properties: p } });
+    for (const p of perms) if (mine(p.sessionID) && !this.rejectIfDenied(tab, p)) this.post({ type: "event", event: { type: "permission.asked", properties: p } });
     for (const q of questions) if (mine(q.sessionID)) this.post({ type: "event", event: { type: "question.asked", properties: q } });
-    await this.req("PATCH", `/session/${id}`, { permission: rulesFor(this.autoEdit) }).catch(() => undefined);
+    // Rules follow the agent of the latest prompt, which may still be running.
+    const last = messages.findLast((m: any) => m.info.role === "user")?.info.agent;
+    await this.applyRules(tab, last ?? this.agent).catch(() => undefined);
   }
 
   /** Messages of a subagent session, for the nested view under a task step. */
@@ -533,7 +558,10 @@ export class ChatController implements vscode.Disposable {
 
     if (slash) {
       const commands = await this.server.request<any[]>("GET", "/command");
-      if (commands.some((c) => c.name === slash[1])) {
+      const command = commands.find((c) => c.name === slash[1]);
+      if (command) {
+        // A command can name its own agent, which then runs instead of the selected one.
+        await this.applyRules(this.tab, command.agent ?? agent);
         await this.req("POST", `/session/${sessionID}/command`, {
           command: slash[1],
           arguments: slash[2] ?? "",
@@ -550,6 +578,7 @@ export class ChatController implements vscode.Disposable {
     if (selectionPart) parts.push(selectionPart);
     parts.push(...fileParts);
 
+    await this.applyRules(this.tab, agent);
     await this.req("POST", `/session/${sessionID}/prompt_async`, { parts, agent, model: req.model });
   }
 
@@ -970,6 +999,7 @@ export class ChatController implements vscode.Disposable {
         this.sendTabs();
       }
     }
+    if (isMain && e.type === "permission.asked" && this.rejectIfDenied(tab, p)) return;
     if ((e.type === "permission.asked" || e.type === "question.asked") && p.id && !tab.pending.has(p.id)) {
       tab.pending.add(p.id);
       this.sendTabs();
