@@ -34,6 +34,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Settings screen** (`…` → Providers and MCP servers) to add API keys, connect or add MCP servers, and open config files
 - Questions asked by the agent rendered as option cards, tabbed with Back / Next and a review step when there are several
 - **Stall warning**: when the model goes quiet (not counting running tools), the status line says so, with Stop and Retry. An optional timeout stops it for you
+- **Rate limits**: when OpenCode is waiting to retry (a rate limit, an overloaded provider, Zen's free limit), the status line says why and when it tries again, instead of looking stalled
 
 ## Keybindings
 

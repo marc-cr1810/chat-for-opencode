@@ -562,6 +562,9 @@ export class ChatController implements vscode.Disposable {
     if (tab !== this.tab || tab.sessionID !== id) return;
     tab.title = session.title || tab.title;
     this.post({ type: "session", session, messages, worktree: tab.worktree });
+    // A run waiting to retry (a rate limit, say) has no message to show it; pass its status on.
+    const status = await this.req<any>("GET", "/session/status").catch(() => ({}));
+    if (status?.[id]?.type === "retry" && tab === this.tab) this.post({ type: "event", event: { type: "session.status", properties: { sessionID: id, status: status[id] } } });
     const commands = this.host.memento.get<Record<string, CommandMeta>>(COMMANDS_KEY, {});
     const entries = messages.filter((m: any) => commands[m.info.id]).map((m: any) => ({ messageID: m.info.id, ...commands[m.info.id] }));
     if (entries.length) this.post({ type: "commandMeta", entries });

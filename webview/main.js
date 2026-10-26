@@ -83,6 +83,8 @@ const state = {
   lastActivity: 0,
   /** Set when the timeout stopped a run: { model, secs }. Cleared by the next message. */
   timedOut: null,
+  /** OpenCode is waiting to retry a failed request: { attempt, message, next, action? } from session.status. */
+  retry: null,
   readOnlyAgents: ["plan"],
   models: [],
   model: saved.model || null,
@@ -684,12 +686,20 @@ function fillStatusRow(el) {
         { class: "status-actions" },
         h("button", { class: "link-btn stop-btn", onClick: () => send({ type: "abort" }) }, "Stop"),
         h("button", { class: "link-btn", onClick: retry }, "Retry"),
+        h("button", { class: "link-btn", onClick: () => state.retry?.action?.link && send({ type: "openExternal", url: state.retry.action.link }) }),
       ),
     );
   }
   let verb, hint;
   const stalled = state.busy ? stallSeconds() : 0;
-  if (!state.busy) {
+  const r = state.busy && state.retry;
+  if (r) {
+    // OpenCode retries rate limits and provider errors itself, waiting longer each time; without this the wait looks like a stall.
+    verb = r.action?.title || r.message;
+    const wait = Math.max(0, Math.ceil((r.next - Date.now()) / 1000));
+    // Zen's free limit sends retry-after up to its daily reset, so the wait is the time until the limit resets.
+    hint = r.action?.reason === "free_tier_limit" ? `resets in ${formatWait(wait)}` : `retry ${r.attempt} ${wait ? `in ${formatWait(wait)}` : "now"}`;
+  } else if (!state.busy) {
     verb = `Timed out: no response from ${state.timedOut.model} for ${state.timedOut.secs}s`;
     hint = "";
   } else if (stalled && state.settings.stallWarningSeconds && stalled >= state.settings.stallWarningSeconds) {
@@ -699,12 +709,26 @@ function fillStatusRow(el) {
     verb = `${state.agent} is working`;
     hint = `${Math.floor((Date.now() - state.busySince) / 1000)}s · Esc to stop`;
   }
-  const warn = !state.busy || (stalled && state.settings.stallWarningSeconds && stalled >= state.settings.stallWarningSeconds);
+  const warn = r || !state.busy || (stalled && state.settings.stallWarningSeconds && stalled >= state.settings.stallWarningSeconds);
   el.classList.toggle("stalled", !!warn);
   el.classList.toggle("timed-out", !state.busy);
-  el.children[3].children[0].classList.toggle("hidden", !state.busy);
+  const [stopBtn, retryBtn, actionBtn] = el.children[3].children;
+  stopBtn.classList.toggle("hidden", !state.busy);
+  // OpenCode is already retrying; our Retry would only start over.
+  retryBtn.classList.toggle("hidden", !!r);
+  actionBtn.classList.toggle("hidden", !r?.action?.link);
+  const label = r?.action?.label ? r.action.label[0].toUpperCase() + r.action.label.slice(1) : "";
+  if (actionBtn.textContent !== label) actionBtn.textContent = label;
+  if (r) el.title = [r.message, r.action?.message].filter(Boolean).join("\n");
+  else el.removeAttribute("title");
   if (el.children[1].textContent !== verb) el.children[1].textContent = verb;
   if (el.children[2].textContent !== hint) el.children[2].textContent = hint;
+}
+
+function formatWait(secs) {
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
 /** Seconds since the model last sent anything, or 0 while a tool is running (tools can take as long as they like). */
@@ -751,6 +775,7 @@ setInterval(() => {
 
 function setBusy(busy) {
   if (busy && !state.busy) state.busySince = Date.now();
+  if (!busy) state.retry = null;
   state.busy = busy;
   updateStatusRow();
   renderSendBtn();
@@ -1623,6 +1648,7 @@ function upsertMessage(info) {
 function loadSession(session, messages) {
   state.session = session;
   state.timedOut = null;
+  state.retry = null;
   state.childParts.clear();
   state.childRequested.clear();
   state.messages.clear();
@@ -1695,6 +1721,9 @@ function onEvent(e) {
       break;
     }
     case "session.status":
+      // A retry ending (or starting) counts as activity, so the stall warning measures each attempt on its own.
+      if (!!state.retry !== (p.status?.type === "retry")) state.lastActivity = Date.now();
+      state.retry = p.status?.type === "retry" ? p.status : null;
       setBusy(p.status?.type !== "idle");
       break;
     case "session.idle":
