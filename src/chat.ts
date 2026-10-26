@@ -626,10 +626,8 @@ export class ChatController implements vscode.Disposable {
       if (last) model = { providerID: last.providerID, modelID: last.modelID };
     }
     if (!model) throw new Error("Pick a model first; compacting needs one to write the summary.");
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Compacting conversation…" },
-      () => this.req("POST", `/session/${sessionID}/summarize`, model),
-    );
+    // No progress popup: the panel already shows "Summarizing conversation…" while it runs.
+    await this.req("POST", `/session/${sessionID}/summarize`, model);
   }
 
   /** Undo back to an earlier message, then send its edited text in its place. */
