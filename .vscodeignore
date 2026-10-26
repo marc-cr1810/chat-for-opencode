@@ -5,3 +5,4 @@ build.mjs
 tsconfig.json
 **/*.map
 .vscode/**
+.github/**

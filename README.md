@@ -1,5 +1,7 @@
 # OpenCode for VS Code
 
+[![CI](https://github.com/marc-cr1810/opencode-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/marc-cr1810/opencode-vscode/actions/workflows/ci.yml)
+
 A VS Code chat panel for [OpenCode](https://opencode.ai).
 
 It starts `opencode serve` in your workspace and talks to it over its local HTTP API, so it uses
@@ -47,3 +49,18 @@ code --install-extension opencode-vscode-0.2.0.vsix
 ```
 
 For development, open this folder in VS Code and press F5.
+
+## Releasing
+
+CI builds and packages every push and pull request (the `.vsix` is attached to the run as an artifact).
+
+To publish a release, bump the version and push the tag:
+
+```bash
+npm version patch
+git push --follow-tags
+```
+
+The release workflow checks that the tag matches `package.json`, builds the `.vsix` and attaches it to a
+GitHub release with generated notes. To also publish to the VS Code Marketplace or Open VSX, set a real
+`publisher` in `package.json` and add a `VSCE_PAT` or `OVSX_PAT` repository secret.
