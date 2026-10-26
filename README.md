@@ -7,7 +7,7 @@ whatever providers, models, agents and commands you've configured for the openco
 
 ## Features
 
-- Chat in an editor tab (spark-style button in the editor title bar) or in the activity-bar side panel
+- Chat in an editor tab (spark-style button in the editor title bar) or in the secondary side bar (right-hand side, next to Copilot / Claude)
 - Streaming responses, collapsible thinking, tool calls shown as a timeline (Read / Update / Bash …)
 - Inline diffs for edits, plus "Open diff" in VS Code's native diff editor
 - Permission prompts with **Yes / Yes, don't ask again / No + feedback** (keys 1–3, Esc)
@@ -33,7 +33,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - `opencode.binaryPath` – path to `opencode` (default: `opencode` on PATH)
 - `opencode.initialMode` – `ask` | `auto` | `plan`
 - `opencode.model` – default `provider/model`
-- `opencode.preferredLocation` – `panel` | `sidebar`
+- `opencode.preferredLocation` – `sidebar` (default, the secondary side bar) | `panel` (editor tab)
 
 ## Build
 

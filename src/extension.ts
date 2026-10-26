@@ -79,7 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const openSidebar = async () => {
-    await vscode.commands.executeCommand("workbench.view.extension.opencode");
+    await vscode.commands.executeCommand("workbench.view.extension.opencode-sidebar");
     setTimeout(() => lastActive?.controller.focus(), 200);
   };
 

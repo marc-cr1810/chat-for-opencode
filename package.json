@@ -19,16 +19,16 @@
   ],
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
-          "id": "opencode",
+          "id": "opencode-sidebar",
           "title": "OpenCode",
           "icon": "media/icon-mono.svg"
         }
       ]
     },
     "views": {
-      "opencode": [
+      "opencode-sidebar": [
         {
           "type": "webview",
           "id": "opencode.chatView",
@@ -122,7 +122,7 @@
             "panel",
             "sidebar"
           ],
-          "default": "panel",
+          "default": "sidebar",
           "description": "Where Ctrl+Esc opens OpenCode when no chat is open."
         }
       }
