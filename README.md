@@ -1,6 +1,6 @@
 # Chat for OpenCode
 
-[![CI](https://github.com/marc-cr1810/opencode-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/marc-cr1810/opencode-vscode/actions/workflows/ci.yml)
+[![CI](https://github.com/marc-cr1810/chat-for-opencode/actions/workflows/ci.yml/badge.svg)](https://github.com/marc-cr1810/chat-for-opencode/actions/workflows/ci.yml)
 
 An unofficial VS Code chat panel for [OpenCode](https://opencode.ai).
 
