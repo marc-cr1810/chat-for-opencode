@@ -68,6 +68,21 @@ const state = {
   agentColors: {},
   autoEdit: false,
   autoRead: false,
+  /** From the extension's settings (see sendSettings in chat.ts). */
+  settings: {
+    defaultAgent: "",
+    sendKey: "enter",
+    includeSelection: true,
+    reasoning: "collapsed",
+    toolOutput: "auto",
+    contextWarningPercent: 75,
+    stallWarningSeconds: 30,
+    responseTimeoutSeconds: 0,
+  },
+  /** When the model last sent anything for this conversation, for the stall warning and timeout. */
+  lastActivity: 0,
+  /** Set when the timeout stopped a run: { model, secs }. Cleared by the next message. */
+  timedOut: null,
   readOnlyAgents: ["plan"],
   models: [],
   model: saved.model || null,
@@ -403,7 +418,7 @@ function renderPart(p) {
       if (!p.text?.trim()) return null;
       const done = !!p.time?.end;
       const secs = done ? Math.max(1, Math.round((p.time.end - p.time.start) / 1000)) : null;
-      return collapsible(p.id, h("span", { class: "thinking-label" }, h("span", { class: "tool-icon", html: icons.sparkle }), done ? `Reasoning · ${secs}s` : "Reasoning…"), h("div", { class: "markdown thinking", html: md(p.text) }), done ? "thinking-row" : "thinking-row live", false);
+      return collapsible(p.id, h("span", { class: "thinking-label" }, h("span", { class: "tool-icon", html: icons.sparkle }), done ? `Reasoning · ${secs}s` : "Reasoning…"), h("div", { class: "markdown thinking", html: md(p.text) }), done ? "thinking-row" : "thinking-row live", state.settings.reasoning === "expanded");
     }
     case "tool":
       return renderTool(p);
@@ -581,6 +596,7 @@ function renderTool(p) {
     open = true;
   }
 
+  if (state.settings.toolOutput !== "auto") open = state.settings.toolOutput === "expanded";
   const dot = h("span", { class: `tool-icon status-${status}`, title: status, html: icon });
   if (!body) {
     return h(
@@ -654,27 +670,84 @@ function renderStatusRow() {
   return el;
 }
 function fillStatusRow(el) {
-  el.classList.toggle("hidden", !state.busy || state.permissions.length > 0 || state.questions.length > 0);
-  if (!state.busy) return;
-  // Build the loader once; rebuilding it would restart its animation every tick.
+  const waiting = state.permissions.length > 0 || state.questions.length > 0;
+  el.classList.toggle("hidden", (!state.busy && !state.timedOut) || waiting);
+  if ((!state.busy && !state.timedOut) || waiting) return;
+  // Build the row once; rebuilding the loader would restart its animation every tick.
   if (!el.firstChild) {
     el.append(
       h("span", { class: "loader" }, h("i"), h("i"), h("i"), h("i"), h("i")),
       h("span", { class: "verb" }),
       h("span", { class: "status-hint" }),
+      h(
+        "span",
+        { class: "status-actions" },
+        h("button", { class: "link-btn stop-btn", onClick: () => send({ type: "abort" }) }, "Stop"),
+        h("button", { class: "link-btn", onClick: retry }, "Retry"),
+      ),
     );
   }
-  const secs = Math.floor((Date.now() - state.busySince) / 1000);
-  const verb = `${state.agent} is working`;
-  const hint = `${secs}s · Esc to stop`;
+  let verb, hint;
+  const stalled = state.busy ? stallSeconds() : 0;
+  if (!state.busy) {
+    verb = `Timed out: no response from ${state.timedOut.model} for ${state.timedOut.secs}s`;
+    hint = "";
+  } else if (stalled && state.settings.stallWarningSeconds && stalled >= state.settings.stallWarningSeconds) {
+    verb = `No response from ${modelName()} for ${stalled}s`;
+    hint = state.settings.responseTimeoutSeconds ? `stops at ${state.settings.responseTimeoutSeconds}s` : "";
+  } else {
+    verb = `${state.agent} is working`;
+    hint = `${Math.floor((Date.now() - state.busySince) / 1000)}s · Esc to stop`;
+  }
+  const warn = !state.busy || (stalled && state.settings.stallWarningSeconds && stalled >= state.settings.stallWarningSeconds);
+  el.classList.toggle("stalled", !!warn);
+  el.classList.toggle("timed-out", !state.busy);
+  el.children[3].children[0].classList.toggle("hidden", !state.busy);
   if (el.children[1].textContent !== verb) el.children[1].textContent = verb;
   if (el.children[2].textContent !== hint) el.children[2].textContent = hint;
 }
+
+/** Seconds since the model last sent anything, or 0 while a tool is running (tools can take as long as they like). */
+function stallSeconds() {
+  for (let i = state.order.length - 1; i >= 0; i--) {
+    const m = state.messages.get(state.order[i]);
+    if (m?.info.role !== "assistant") continue;
+    for (const p of m.parts.values()) if (p.type === "tool" && (p.state?.status === "running" || p.state?.status === "pending")) return 0;
+    break;
+  }
+  return Math.floor((Date.now() - Math.max(state.lastActivity, state.busySince)) / 1000);
+}
+
+function modelName() {
+  const m = state.models.find((x) => state.model && x.providerID === state.model.providerID && x.modelID === state.model.modelID);
+  return m ? m.name : state.model?.modelID || "the model";
+}
+
+function retry() {
+  state.timedOut = null;
+  updateStatusRow();
+  send({ type: "retry" });
+}
+
+/** Stop a run that has been silent past the configured timeout. */
+function checkTimeout() {
+  const limit = state.settings.responseTimeoutSeconds;
+  if (!state.busy || !limit || state.permissions.length || state.questions.length) return;
+  const secs = stallSeconds();
+  if (secs < limit) return;
+  state.timedOut = { model: modelName(), secs };
+  send({ type: "abort" });
+}
+
 function updateStatusRow() {
   const el = messagesEl.querySelector(".status-row");
   if (el) fillStatusRow(el);
 }
-setInterval(() => state.busy && updateStatusRow(), 1000);
+setInterval(() => {
+  if (!state.busy) return;
+  checkTimeout();
+  updateStatusRow();
+}, 1000);
 
 function setBusy(busy) {
   if (busy && !state.busy) state.busySince = Date.now();
@@ -818,11 +891,13 @@ function renderContext() {
   const circ = 2 * Math.PI * r;
   const ring = pct === null ? "" : `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><circle cx="8" cy="8" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="${(circ * pct) / 100} ${circ}" transform="rotate(-90 8 8)"/></svg>`;
   btn.innerHTML = `${ring}<span>${pct === null ? fmtTokens(last.used) : `${pct}%`}</span>${cost > 0 ? `<span class="ctx-cost">$${cost.toFixed(2)}</span>` : ""}`;
-  btn.className = `ctx-meter ${pct >= 90 ? "crit" : pct >= 75 ? "warn" : ""}`;
+  const warnAt = state.settings.contextWarningPercent;
+  const level = pct >= Math.max(90, warnAt) ? "crit" : pct >= warnAt ? "warn" : "";
+  btn.className = `ctx-meter ${level}`;
   btn.title =
     `${fmtTokens(last.used)}${limit ? ` of ${fmtTokens(limit)}` : ""} tokens in context` +
     (cost > 0 ? ` · $${cost.toFixed(4)} spent` : "") +
-    "\nClick to compact the conversation";
+    (level ? "\nThe context is getting full — click to compact the conversation" : "\nClick to compact the conversation");
 }
 
 function renderTodos() {
@@ -1187,6 +1262,7 @@ function parseMentions(text) {
 function submit() {
   const text = input.value.trim();
   if (!text && !state.images.length) return;
+  state.timedOut = null;
   const slash = text.match(/^\/(\S+)$/);
   if (slash && BUILTIN_COMMANDS.some((c) => c.name === slash[1])) {
     input.value = "";
@@ -1264,7 +1340,7 @@ function startEdit(id, bubble, text) {
     stickToBottom = true;
   };
   area.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (isSendKey(e)) {
       e.preventDefault();
       resend();
     } else if (e.key === "Escape") cancel();
@@ -1283,6 +1359,36 @@ function startEdit(id, bubble, text) {
   area.focus();
   area.setSelectionRange(area.value.length, area.value.length);
 }
+
+function applyDefaultAgent() {
+  const a = state.settings.defaultAgent;
+  if (a && state.agents.includes(a) && a !== state.agent) {
+    state.agent = a;
+    renderModeBtn();
+    reportStatus();
+  }
+}
+
+/** Enter, or Ctrl/Cmd+Enter when the send key setting says so. */
+function isSendKey(e) {
+  if (e.key !== "Enter" || e.isComposing) return false;
+  return state.settings.sendKey === "ctrlEnter" ? e.ctrlKey || e.metaKey : !e.shiftKey && !e.ctrlKey && !e.metaKey;
+}
+
+function applySettings(settings, first) {
+  const before = state.settings;
+  state.settings = { ...state.settings, ...settings };
+  if (first || before.includeSelection !== state.settings.includeSelection) {
+    state.includeSelection = state.settings.includeSelection;
+    renderSelBtn();
+  }
+  if (!state.order.length) applyDefaultAgent();
+  input.placeholder = state.settings.sendKey === "ctrlEnter" ? "Ask OpenCode…  (@ files, / commands, Ctrl+Enter to send)" : "Ask OpenCode…  (@ files, / commands)";
+  if (before.reasoning !== state.settings.reasoning || before.toolOutput !== state.settings.toolOutput) queueRender();
+  renderContext();
+  updateStatusRow();
+}
+let settingsReceived = false;
 
 function setAutoRead(on) {
   state.autoRead = on;
@@ -1310,7 +1416,7 @@ input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === "Tab") return e.preventDefault(), acceptMenu();
     if (e.key === "Escape") return e.preventDefault(), closeMenu();
   }
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+  if (isSendKey(e)) {
     e.preventDefault();
     return submit();
   }
@@ -1516,6 +1622,7 @@ function upsertMessage(info) {
 
 function loadSession(session, messages) {
   state.session = session;
+  state.timedOut = null;
   state.childParts.clear();
   state.childRequested.clear();
   state.messages.clear();
@@ -1534,7 +1641,7 @@ function loadSession(session, messages) {
   if (lastUser?.agent && state.agents.includes(lastUser.agent)) {
     state.agent = lastUser.agent;
     renderModeBtn();
-  }
+  } else if (!messages.length) applyDefaultAgent();
   setBusy(!!last && last.role === "assistant" && !last.time?.completed && !last.error);
   // Last todo state from history
   for (const { parts } of messages) for (const p of parts) if (p.type === "tool" && p.tool === "todowrite" && p.state?.input?.todos) state.todos = p.state.input.todos;
@@ -1547,6 +1654,7 @@ function loadSession(session, messages) {
 
 function onEvent(e) {
   const p = e.properties || {};
+  if (e.type.startsWith("message.")) state.lastActivity = Date.now();
   switch (e.type) {
     case "message.updated": {
       upsertMessage(p.info);
@@ -1702,6 +1810,10 @@ window.addEventListener("message", (ev) => {
       break;
     case "externalPrompt":
       sendExternal(msg.text, msg.mentions);
+      break;
+    case "settings":
+      applySettings(msg.settings, !settingsReceived);
+      settingsReceived = true;
       break;
     case "event":
       onEvent(msg.event);

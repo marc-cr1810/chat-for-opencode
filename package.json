@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
   "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -163,7 +163,7 @@
         "opencode.autoApproveReadOnly": {
           "type": "boolean",
           "default": false,
-          "description": "In read-only agents such as plan, run read-only shell commands (ls, grep, git log\u2026) without asking. Commands with redirects or write/exec flags still ask."
+          "description": "In read-only agents such as plan, run read-only shell commands (ls, grep, git log…) without asking. Commands with redirects or write/exec flags still ask."
         },
         "opencode.model": {
           "type": "string",
@@ -183,6 +183,77 @@
           "type": "boolean",
           "default": true,
           "description": "Show a notification when OpenCode finishes or needs approval while no visible OpenCode panel has that conversation open."
+        },
+        "opencode.defaultAgent": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Agent a new conversation starts in, such as `build` or `plan`. Empty uses OpenCode's default."
+        },
+        "opencode.sendKey": {
+          "type": "string",
+          "enum": [
+            "enter",
+            "ctrlEnter"
+          ],
+          "enumDescriptions": [
+            "Enter sends, Shift+Enter adds a new line",
+            "Ctrl+Enter (Cmd+Enter on Mac) sends, Enter adds a new line"
+          ],
+          "default": "enter",
+          "description": "Key that sends a message."
+        },
+        "opencode.includeSelection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Share the current editor file and selection with OpenCode by default. You can still toggle it per message with the eye button."
+        },
+        "opencode.reasoning": {
+          "type": "string",
+          "enum": [
+            "collapsed",
+            "expanded"
+          ],
+          "default": "collapsed",
+          "description": "Whether the model's reasoning starts collapsed or expanded."
+        },
+        "opencode.toolOutput": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "expanded",
+            "collapsed"
+          ],
+          "enumDescriptions": [
+            "Edit diffs and to-do lists open, everything else collapsed",
+            "Every tool step open",
+            "Every tool step collapsed"
+          ],
+          "default": "auto",
+          "description": "Which tool steps start expanded."
+        },
+        "opencode.notifyWhenFinished": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Notify when a task finishes. Turn off to only be notified when OpenCode needs your approval. Has no effect when `#opencode.notifications#` is off."
+        },
+        "opencode.contextWarningPercent": {
+          "type": "number",
+          "default": 75,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "How full the context window gets (in %) before the context meter turns amber and suggests compacting. It turns red at 90%, or at this value if it's higher."
+        },
+        "opencode.stallWarningSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Show a warning when the model hasn't sent anything for this many seconds. Time spent running tools doesn't count. 0 turns it off."
+        },
+        "opencode.responseTimeoutSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop the request when the model hasn't sent anything for this many seconds, so you can retry. Time spent running tools doesn't count. 0 turns it off."
         }
       }
     },

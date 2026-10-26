@@ -122,7 +122,45 @@ export class ChatController implements vscode.Disposable {
       server.onStatus((s) => this.post({ type: "serverStatus", status: s })),
       vscode.window.onDidChangeTextEditorSelection(() => this.queueSelection()),
       vscode.window.onDidChangeActiveTextEditor(() => this.queueSelection()),
+      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration("opencode") && this.sendSettings()),
     );
+  }
+
+  /** Panel behaviour the user can configure; sent on start and whenever the settings change. */
+  private sendSettings() {
+    const cfg = vscode.workspace.getConfiguration("opencode");
+    this.post({
+      type: "settings",
+      settings: {
+        defaultAgent: cfg.get<string>("defaultAgent", ""),
+        sendKey: cfg.get<string>("sendKey", "enter"),
+        includeSelection: cfg.get<boolean>("includeSelection", true),
+        reasoning: cfg.get<string>("reasoning", "collapsed"),
+        toolOutput: cfg.get<string>("toolOutput", "auto"),
+        contextWarningPercent: cfg.get<number>("contextWarningPercent", 75),
+        stallWarningSeconds: cfg.get<number>("stallWarningSeconds", 30),
+        responseTimeoutSeconds: cfg.get<number>("responseTimeoutSeconds", 0),
+      },
+    });
+  }
+
+  /** Stop the current run and send the last prompt again, replacing the attempt that stalled. */
+  private async retry() {
+    const tab = this.tab;
+    const sid = tab.sessionID;
+    if (!sid) return;
+    await this.req("POST", `/session/${sid}/abort`).catch(() => undefined);
+    const messages = await this.req<any[]>("GET", `/session/${sid}/message`);
+    const user = messages.findLast((m: any) => m.info.role === "user" && !m.parts.some((p: any) => p.type === "compaction"));
+    if (!user) return;
+    const parts = user.parts
+      .filter((p: any) => p.type === "text" || p.type === "file")
+      .map(({ id, sessionID, messageID, ...rest }: any) => rest);
+    const session = await this.req<any>("POST", `/session/${sid}/revert`, { messageID: user.info.id });
+    this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
+    const agent = user.info.agent ?? this.agent;
+    await this.applyRules(tab, agent);
+    await this.req("POST", `/session/${sid}/prompt_async`, { parts, agent, model: user.info.model });
   }
 
   // -------------------------------------------------------------------- tabs
@@ -307,6 +345,8 @@ export class ChatController implements vscode.Disposable {
         return this.send(msg as SendRequest);
       case "editResend":
         return this.editResend(msg.messageID, msg as SendRequest);
+      case "retry":
+        return this.retry();
       case "abort":
         if (this.sessionID) await this.req("POST", `/session/${this.sessionID}/abort`);
         return;
@@ -457,6 +497,7 @@ export class ChatController implements vscode.Disposable {
       commands: commands.map((c) => ({ name: c.name, description: c.description ?? "" })),
       cwd: this.server.directory,
     });
+    this.sendSettings();
     this.sendSelection();
     this.sendTabs();
     if (this.sessionID) await this.loadSession(this.sessionID);
@@ -963,7 +1004,9 @@ export class ChatController implements vscode.Disposable {
   }
 
   private notify(tab: Tab, kind: "done" | "attention") {
-    if (!vscode.workspace.getConfiguration("opencode").get<boolean>("notifications", true)) return;
+    const cfg = vscode.workspace.getConfiguration("opencode");
+    if (!cfg.get<boolean>("notifications", true)) return;
+    if (kind === "done" && !cfg.get<boolean>("notifyWhenFinished", true)) return;
     // A visible panel with this conversation open already shows its state (the tab strip marks busy / needs you).
     const shown = [...liveControllers].some((c) => c.host.isVisible() && c.tabs.some((t) => t === tab || (!!tab.sessionID && t.sessionID === tab.sessionID)));
     if (shown) return;

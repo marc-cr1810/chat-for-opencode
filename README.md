@@ -32,7 +32,8 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Status bar item** showing the agent and model, a spinner while working, and a warning when approval is needed
 - **Notifications** when a task finishes or needs approval while the panel is hidden (`opencode.notifications`)
 - **Settings screen** (`…` → Providers and MCP servers) to add API keys, connect or add MCP servers, and open config files
-- Questions asked by the agent rendered as option cards
+- Questions asked by the agent rendered as option cards, tabbed with Back / Next and a review step when there are several
+- **Stall warning**: when the model goes quiet (not counting running tools), the status line says so, with Stop and Retry. An optional timeout stops it for you
 
 ## Keybindings
 
@@ -50,7 +51,16 @@ whatever providers, models, agents and commands you've configured for the openco
 - `opencode.autoApproveEdits` – apply edits without asking (shell commands always ask)
 - `opencode.autoApproveReadOnly` – in plan (and other read-only agents), run read-only shell commands like `ls`, `grep` and `git log` without asking; redirects and write/exec flags still ask
 - `opencode.model` – default `provider/model`
-- `opencode.notifications` – notify when a task finishes or needs approval while hidden (default on)
+- `opencode.defaultAgent` – agent new conversations start in, e.g. `plan` (default: OpenCode's)
+- `opencode.sendKey` – `enter` (default) or `ctrlEnter`, where Enter adds a new line
+- `opencode.includeSelection` – share the current file and selection by default (default on)
+- `opencode.reasoning` – reasoning starts `collapsed` (default) or `expanded`
+- `opencode.toolOutput` – which tool steps start open: `auto` (diffs and to-dos, default), `expanded` or `collapsed`
+- `opencode.notifications` – notify when a task finishes or needs approval while no visible panel shows it (default on)
+- `opencode.notifyWhenFinished` – also notify when a task finishes, not only for approvals (default on)
+- `opencode.contextWarningPercent` – when the context meter turns amber and suggests compacting (default 75)
+- `opencode.stallWarningSeconds` – warn after this long without a response from the model; 0 turns it off (default 30)
+- `opencode.responseTimeoutSeconds` – stop the request after this long without a response; 0 turns it off (default 0)
 - `opencode.preferredLocation` – `sidebar` (default, the secondary side bar) | `panel` (editor tab)
 
 ## Build
