@@ -1,0 +1,147 @@
+{
+  "name": "opencode-vscode",
+  "displayName": "OpenCode for VS Code",
+  "description": "Chat with OpenCode in a native VS Code panel, modelled on the Claude Code extension.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "icon": "media/icon.png",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencode",
+          "title": "OpenCode",
+          "icon": "media/icon-mono.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencode": [
+        {
+          "type": "webview",
+          "id": "opencode.chatView",
+          "name": "OpenCode"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "opencode.openInTab",
+        "title": "OpenCode: Open in New Tab",
+        "icon": "media/icon-mono.svg"
+      },
+      {
+        "command": "opencode.openInSidebar",
+        "title": "OpenCode: Open in Side Bar"
+      },
+      {
+        "command": "opencode.focus",
+        "title": "OpenCode: Focus Input"
+      },
+      {
+        "command": "opencode.newSession",
+        "title": "OpenCode: New Conversation"
+      },
+      {
+        "command": "opencode.insertAtMention",
+        "title": "OpenCode: Insert @-Mention of Selection"
+      },
+      {
+        "command": "opencode.restartServer",
+        "title": "OpenCode: Restart Server"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "opencode.openInTab",
+          "group": "navigation@100"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "opencode.focus",
+        "key": "ctrl+escape",
+        "mac": "cmd+escape"
+      },
+      {
+        "command": "opencode.openInTab",
+        "key": "ctrl+shift+escape",
+        "mac": "cmd+shift+escape"
+      },
+      {
+        "command": "opencode.insertAtMention",
+        "key": "alt+k",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "OpenCode",
+      "properties": {
+        "opencode.binaryPath": {
+          "type": "string",
+          "default": "opencode",
+          "description": "Path to the opencode executable."
+        },
+        "opencode.initialMode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "auto",
+            "plan"
+          ],
+          "enumDescriptions": [
+            "Ask before edits",
+            "Edit automatically",
+            "Plan mode (read only)"
+          ],
+          "default": "ask",
+          "description": "Permission mode for new conversations."
+        },
+        "opencode.model": {
+          "type": "string",
+          "default": "",
+          "description": "Default model as provider/model (e.g. opencode/big-pickle). Empty uses OpenCode's default."
+        },
+        "opencode.preferredLocation": {
+          "type": "string",
+          "enum": [
+            "panel",
+            "sidebar"
+          ],
+          "default": "panel",
+          "description": "Where Ctrl+Esc opens OpenCode when no chat is open."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.3",
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "diff": "^5.2.0",
+    "esbuild": "^0.28.2",
+    "marked": "^12.0.2",
+    "typescript": "^5.9.3"
+  }
+}
