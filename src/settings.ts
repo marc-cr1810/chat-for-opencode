@@ -7,12 +7,12 @@ import { OpencodeServer } from "./server";
 export class SettingsPanel {
   private static current: SettingsPanel | undefined;
 
-  static show(extensionUri: vscode.Uri, server: OpencodeServer) {
+  static show(extensionUri: vscode.Uri, server: OpencodeServer, extensionId: string) {
     if (SettingsPanel.current) {
       SettingsPanel.current.panel.reveal();
       return;
     }
-    SettingsPanel.current = new SettingsPanel(extensionUri, server);
+    SettingsPanel.current = new SettingsPanel(extensionUri, server, extensionId);
   }
 
   private readonly panel: vscode.WebviewPanel;
@@ -20,6 +20,7 @@ export class SettingsPanel {
   private constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly server: OpencodeServer,
+    private readonly extensionId: string,
   ) {
     this.panel = vscode.window.createWebviewPanel("opencode.settings", "OpenCode Settings", vscode.ViewColumn.Active, {
       enableScripts: true,
@@ -54,7 +55,10 @@ export class SettingsPanel {
           source: p.source,
           env: p.env ?? [],
           models: Object.keys(p.models ?? {}).length,
-          apiKey: (authMethods[p.id] ?? [{ type: "api" }]).some((m: any) => m.type === "api"),
+          // Offer a key field when the provider lists an API-key method, or lists none but reads a key from env.
+          apiKey: authMethods[p.id]
+            ? authMethods[p.id].some((m: any) => m.type === "api")
+            : (p.env ?? []).length > 0,
         }))
         .sort((a: any, b: any) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name)),
       mcp: Object.entries<any>(mcp).map(([name, s]) => ({ name, status: s.status, error: s.error })),
@@ -106,13 +110,15 @@ export class SettingsPanel {
       case "openConfig":
         return this.openConfig(msg.scope);
       case "openExtensionSettings":
-        await vscode.commands.executeCommand("workbench.action.openSettings", "@ext:local.opencode-vscode");
+        await vscode.commands.executeCommand("workbench.action.openSettings", `@ext:${this.extensionId}`);
         return;
     }
   }
 
   private async openConfig(scope: "global" | "project") {
-    const dir = scope === "global" ? path.join(os.homedir(), ".config", "opencode") : this.server.directory;
+    // Ask OpenCode where its global config lives (respects XDG_CONFIG_HOME and platform layout).
+    const paths = scope === "global" ? await this.server.request<any>("GET", "/path").catch(() => undefined) : undefined;
+    const dir = scope === "global" ? paths?.config ?? path.join(os.homedir(), ".config", "opencode") : this.server.directory;
     for (const name of ["opencode.jsonc", "opencode.json", "config.json"]) {
       const uri = vscode.Uri.file(path.join(dir, name));
       try {

@@ -17,8 +17,10 @@ export function activate(context: vscode.ExtensionContext) {
   const controllers = new Set<ChatController>();
   const statuses = new Map<ChatController, ChatStatus>();
   let lastActive: { controller: ChatController; reveal: () => void } | undefined;
+  let sidebarController: ChatController | undefined;
+  // Resolvers waiting for the side bar view to be created (it resolves asynchronously).
+  let sidebarWaiters: ((c: ChatController) => void)[] = [];
 
-  const current = () => lastActive?.controller;
   const track = (controller: ChatController, reveal: () => void) => {
     controllers.add(controller);
     lastActive = { controller, reveal };
@@ -67,7 +69,8 @@ export function activate(context: vscode.ExtensionContext) {
     isVisible: opts.isVisible,
     reveal: opts.reveal,
     showLogs: () => output.show(),
-    openSettings: () => SettingsPanel.show(context.extensionUri, server!),
+    memento: context.workspaceState,
+    openSettings: () => SettingsPanel.show(context.extensionUri, server!, context.extension.id),
     reportStatus: (s) => {
       statuses.set(opts.controller(), s);
       renderStatusBar();
@@ -94,8 +97,13 @@ export function activate(context: vscode.ExtensionContext) {
             }),
           );
           track(controller, reveal);
+          sidebarController = controller;
+          sidebarWaiters.splice(0).forEach((resolve) => resolve(controller));
           view.onDidChangeVisibility(() => view.visible && track(controller, reveal));
-          view.onDidDispose(() => untrack(controller));
+          view.onDidDispose(() => {
+            if (sidebarController === controller) sidebarController = undefined;
+            untrack(controller);
+          });
         },
       },
       { webviewOptions: { retainContextWhenHidden: true } },
@@ -131,9 +139,18 @@ export function activate(context: vscode.ExtensionContext) {
     return controller;
   };
 
-  const openSidebar = async () => {
+  /** Show the side bar view and wait (up to 5s) for its controller to exist. */
+  const openSidebar = async (): Promise<ChatController | undefined> => {
+    const ready = sidebarController
+      ? Promise.resolve(sidebarController)
+      : new Promise<ChatController | undefined>((resolve) => {
+          sidebarWaiters.push(resolve);
+          setTimeout(() => resolve(undefined), 5000);
+        });
     await vscode.commands.executeCommand("workbench.view.extension.opencode-sidebar");
-    setTimeout(() => lastActive?.controller.focus(), 200);
+    const controller = await ready;
+    setTimeout(() => controller?.focus(), 200);
+    return controller;
   };
 
   const ensureOpen = async () => {
@@ -142,10 +159,7 @@ export function activate(context: vscode.ExtensionContext) {
       return lastActive.controller;
     }
     const where = vscode.workspace.getConfiguration("opencode").get<string>("preferredLocation");
-    if (where === "sidebar") {
-      await openSidebar();
-      return current();
-    }
+    if (where === "sidebar") return (await openSidebar()) ?? openInTab();
     return openInTab();
   };
 
@@ -222,7 +236,7 @@ export function activate(context: vscode.ExtensionContext) {
         c?.sendPrompt(text, [mention]);
       },
     ),
-    vscode.commands.registerCommand("opencode.openSettingsPanel", () => SettingsPanel.show(context.extensionUri, server!)),
+    vscode.commands.registerCommand("opencode.openSettingsPanel", () => SettingsPanel.show(context.extensionUri, server!, context.extension.id)),
     vscode.commands.registerCommand("opencode.restartServer", async () => {
       await server?.restart();
       vscode.window.showInformationMessage("OpenCode server restarted.");
@@ -235,5 +249,5 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  server?.stop();
+  return server?.stop();
 }

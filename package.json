@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
   "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -192,7 +192,8 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository"
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/diff": "^5.2.3",
@@ -202,6 +203,7 @@
     "diff": "^5.2.0",
     "esbuild": "^0.28.2",
     "marked": "^12.0.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   }
 }

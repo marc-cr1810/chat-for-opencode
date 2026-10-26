@@ -83,6 +83,7 @@ const state = {
   changesOpen: false,
   childParts: new Map(), // subagent sessionID -> Map(partID -> tool part)
   childRequested: new Set(),
+  commandMeta: new Map(), // user message ID -> { name, arguments } for /commands
   worktree: null,
   selection: null,
   includeSelection: true,
@@ -223,8 +224,8 @@ function flush() {
     }
     const fresh = renderMessage(id);
     if (old) {
-      preserveOpen(old, fresh);
-      old.replaceWith(fresh);
+      // A message being edited in place keeps its editor until the edit is sent or cancelled.
+      if (!old.querySelector(".user-bubble.editing")) morph(old, fresh);
     } else {
       messagesEl.querySelector(".empty")?.remove();
       const status = messagesEl.querySelector(".status-row");
@@ -250,26 +251,43 @@ function renderRevertBanner() {
   );
 }
 
+let pendingUndo = null; // prompt to restore once the undo actually happens
+
 function undoTo(id) {
-  if (state.busy && !confirm("OpenCode is still working. Stop it and undo?")) return;
   const msg = state.messages.get(id);
   const text = [...msg.parts.values()].filter((p) => p.type === "text" && !p.synthetic && !p.ignored).map((p) => p.text).join("\n");
-  if (!input.value.trim()) {
-    input.value = text;
-    autosize();
-    renderSendBtn();
-  }
+  pendingUndo = { id, text };
   send({ type: "revert", messageID: id });
 }
 
-/** Keep expanded tool/thinking blocks expanded across re-renders. */
-function preserveOpen(oldEl, newEl) {
-  oldEl.querySelectorAll("[data-pid].open").forEach((o) => {
-    newEl.querySelector(`[data-pid="${o.dataset.pid}"]`)?.classList.add("open");
-  });
-  oldEl.querySelectorAll("[data-pid].closed").forEach((o) => {
-    newEl.querySelector(`[data-pid="${o.dataset.pid}"]`)?.classList.remove("open");
-  });
+/**
+ * Update `a` in place to match `b`, touching only what changed. Keeping the existing nodes means
+ * clicks, hover and CSS animations survive while a reply streams in.
+ */
+function morph(a, b) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName || (a.nodeType === 1 && a.dataset.pid !== b.dataset.pid)) {
+    if (a.nodeType === 1 && b.nodeType === 1 && a.dataset.user && a.dataset.pid === b.dataset.pid) {
+      b.dataset.user = a.dataset.user;
+      b.classList.toggle("open", a.dataset.user === "open");
+    }
+    a.replaceWith(b);
+    return;
+  }
+  if (a.nodeType !== 1) {
+    if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue;
+    return;
+  }
+  for (const { name } of [...a.attributes]) {
+    if (!b.hasAttribute(name) && name !== "data-user") a.removeAttribute(name);
+  }
+  for (const { name, value } of [...b.attributes]) {
+    if (a.getAttribute(name) !== value) a.setAttribute(name, value);
+  }
+  if (a.dataset.user) a.classList.toggle("open", a.dataset.user === "open");
+  const ac = [...a.childNodes];
+  const bc = [...b.childNodes];
+  bc.forEach((child, i) => (ac[i] ? morph(ac[i], child) : a.appendChild(child)));
+  for (let i = bc.length; i < ac.length; i++) ac[i].remove();
 }
 
 function renderMessage(id) {
@@ -278,6 +296,9 @@ function renderMessage(id) {
   if (msg.info.role === "user") {
     const text = parts.filter((p) => p.type === "text" && !p.synthetic && !p.ignored).map((p) => p.text).join("\n");
     const files = parts.filter((p) => p.type === "file");
+    const compaction = parts.find((p) => p.type === "compaction");
+    const command = compaction ? { name: "compact", arguments: compaction.auto ? "(automatic, context was full)" : "" } : state.commandMeta.get(id);
+    if (command) return renderCommandMessage(id, command, compaction ? "" : text);
     return h(
       "div",
       { class: "msg user", "data-mid": id },
@@ -311,6 +332,20 @@ function renderMessage(id) {
     );
   }
   const el = h("div", { class: "msg assistant", "data-mid": id });
+  if (msg.info.summary === true || msg.info.mode === "compaction") {
+    // The summary written by /compact: folded away, like the command that produced it.
+    const summary = parts.filter((p) => p.type === "text" && !p.synthetic).map((p) => p.text).join("\n\n");
+    el.append(
+      collapsible(
+        `${id}-summary`,
+        h("span", { class: "thinking-label" }, h("span", { class: "tool-icon", html: icons.listCheck }), msg.info.time?.completed ? "Conversation summary" : "Summarizing conversation…"),
+        h("div", { class: "markdown", html: md(summary) }),
+        "summary-row",
+        false,
+      ),
+    );
+    return el;
+  }
   for (const p of parts) {
     const node = renderPart(p);
     if (node) el.append(node);
@@ -321,6 +356,30 @@ function renderMessage(id) {
     el.append(h("div", { class: "interrupted" }, "Stopped"));
   }
   return el;
+}
+
+/** A /command as the user typed it, with the expanded prompt available on demand. */
+function renderCommandMessage(id, command, prompt) {
+  const head = h(
+    "div",
+    { class: "cmd-line" },
+    h("span", { class: "cmd-name" }, `/${command.name}`),
+    command.arguments ? h("span", { class: "cmd-args" }, command.arguments) : null,
+  );
+  return h(
+    "div",
+    { class: "msg user", "data-mid": id },
+    h(
+      "div",
+      { class: "user-bubble command-bubble" },
+      h(
+        "div",
+        { class: "msg-actions" },
+        h("button", { class: "icon-btn", title: "Undo to here: removes this command and everything after it, and restores files", html: icons.undo, onClick: () => undoTo(id) }),
+      ),
+      prompt ? collapsible(`${id}-prompt`, head, h("div", { class: "cmd-prompt" }, prompt), "cmd-row", false) : head,
+    ),
+  );
 }
 
 function errorText(err) {
@@ -351,13 +410,17 @@ function renderPart(p) {
   }
 }
 
+/** Expand/collapse, remembering the user's choice so streaming updates don't undo it. */
+function toggleOpen(el) {
+  const open = !el.classList.contains("open");
+  el.classList.toggle("open", open);
+  el.dataset.user = open ? "open" : "closed";
+}
+
 function collapsible(pid, head, body, cls, open) {
   const el = h("div", { class: `row collapsible ${cls} ${open ? "open" : ""}`, "data-pid": pid });
   const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
-  header.addEventListener("click", () => {
-    el.classList.toggle("open");
-    el.classList.toggle("closed", !el.classList.contains("open"));
-  });
+  header.addEventListener("click", () => toggleOpen(el));
   el.append(header, h("div", { class: "coll-body" }, body));
   return el;
 }
@@ -517,10 +580,7 @@ function renderTool(p) {
   }
   const el = h("div", { class: `row tool-row collapsible ${open ? "open" : ""}`, "data-pid": p.id }, dot);
   const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
-  header.addEventListener("click", () => {
-    el.classList.toggle("open");
-    el.classList.toggle("closed", !el.classList.contains("open"));
-  });
+  header.addEventListener("click", () => toggleOpen(el));
   el.append(h("div", { class: "tool-main" }, header, summary ? h("div", { class: "tool-sub" }, summary) : null, h("div", { class: "coll-body" }, body)));
   return el;
 }
@@ -584,13 +644,19 @@ function renderStatusRow() {
 function fillStatusRow(el) {
   el.classList.toggle("hidden", !state.busy || state.permissions.length > 0 || state.questions.length > 0);
   if (!state.busy) return;
+  // Build the loader once; rebuilding it would restart its animation every tick.
+  if (!el.firstChild) {
+    el.append(
+      h("span", { class: "loader" }, h("i"), h("i"), h("i"), h("i"), h("i")),
+      h("span", { class: "verb" }),
+      h("span", { class: "status-hint" }),
+    );
+  }
   const secs = Math.floor((Date.now() - state.busySince) / 1000);
-  el.innerHTML = "";
-  el.append(
-    h("span", { class: "loader" }, h("i"), h("i"), h("i"), h("i"), h("i")),
-    h("span", { class: "verb" }, `${state.agent} is working`),
-    h("span", { class: "status-hint" }, `${secs}s · Esc to stop`),
-  );
+  const verb = `${state.agent} is working`;
+  const hint = `${secs}s · Esc to stop`;
+  if (el.children[1].textContent !== verb) el.children[1].textContent = verb;
+  if (el.children[2].textContent !== hint) el.children[2].textContent = hint;
 }
 function updateStatusRow() {
   const el = messagesEl.querySelector(".status-row");
@@ -953,6 +1019,7 @@ function acceptMenu() {
 }
 
 let fileQuery = null;
+let fileSearchTimer;
 function updateMenuFromInput() {
   const caret = input.selectionStart;
   const before = input.value.slice(0, caret);
@@ -962,7 +1029,10 @@ function updateMenuFromInput() {
     fileQuery = at[2];
     if (!menu || menu.kind !== "file") openMenu("file", [], start);
     else menu.start = start;
-    send({ type: "searchFiles", query: at[2] });
+    // Debounce: searching on every keystroke floods the server.
+    clearTimeout(fileSearchTimer);
+    const query = at[2];
+    fileSearchTimer = setTimeout(() => send({ type: "searchFiles", query }), 120);
     return;
   }
   const slash = before.match(/^\/(\S*)$/);
@@ -1070,7 +1140,6 @@ function startEdit(id, bubble, text) {
   const resend = () => {
     const value = area.value.trim();
     if (!value) return;
-    if (state.busy && !confirm("OpenCode is still working. Stop it and resend?")) return;
     send({
       type: "editResend",
       messageID: id,
@@ -1159,6 +1228,7 @@ input.addEventListener("paste", (e) => {
     if (item.type.startsWith("image/")) {
       e.preventDefault();
       const file = item.getAsFile();
+      if (!file) continue;
       const reader = new FileReader();
       reader.onload = () => {
         state.images.push({ dataUrl: reader.result, mime: item.type, name: file.name || `pasted-image.${item.type.split("/")[1]}` });
@@ -1190,7 +1260,7 @@ $("slashBtn").addEventListener("click", () => {
   updateMenuFromInput();
 });
 $("ctxBtn").addEventListener("click", () => {
-  if (confirm("Compact this conversation? OpenCode will summarize it to free up context.")) runBuiltin("compact");
+  send({ type: "compact", model: state.model || undefined, ask: true });
 });
 $("modelBtn").addEventListener("click", (e) => {
   e.stopPropagation();
@@ -1203,7 +1273,8 @@ document.addEventListener("click", (e) => {
   if (!$("morePop").contains(e.target) && !e.target.closest("#moreBtn")) $("morePop").classList.add("hidden");
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.busy && document.activeElement !== input && !state.permissions.length) send({ type: "abort" });
+  // Esc stops the run, unless a permission or question card is open (Esc answers those instead).
+  if (e.key === "Escape" && state.busy && document.activeElement !== input && !state.permissions.length && !state.questions.length) send({ type: "abort" });
 });
 
 // Clicks inside rendered markdown
@@ -1217,9 +1288,12 @@ messagesEl.addEventListener("click", (e) => {
     return;
   }
   const a = e.target.closest("a:not(.file-ref)");
-  if (a && a.getAttribute("href") && !/^https?:/.test(a.getAttribute("href"))) {
+  const href = a?.getAttribute("href");
+  if (href) {
     e.preventDefault();
-    openPath(a.getAttribute("href"));
+    // Web links open in the browser via VS Code; anything else is treated as a file path.
+    if (/^https?:/.test(href)) send({ type: "openExternal", url: href });
+    else openPath(href);
   }
   const ref = e.target.closest(".file-ref");
   if (ref) {
@@ -1408,6 +1482,14 @@ function onEvent(e) {
         state.session = p.info;
         renderTitle();
         if (revertChanged) queueRender();
+        if (pendingUndo && p.info.revert?.messageID === pendingUndo.id) {
+          if (!input.value.trim()) {
+            input.value = pendingUndo.text;
+            autosize();
+            renderSendBtn();
+          }
+          pendingUndo = null;
+        }
       }
       break;
     case "session.error":
@@ -1494,6 +1576,12 @@ window.addEventListener("message", (ev) => {
       if (owner) queueRender(owner);
       break;
     }
+    case "commandMeta":
+      for (const e of msg.entries) {
+        state.commandMeta.set(e.messageID, { name: e.name, arguments: e.arguments });
+        queueRender(e.messageID);
+      }
+      break;
     case "externalPrompt":
       sendExternal(msg.text, msg.mentions);
       break;

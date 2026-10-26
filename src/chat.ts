@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { applyPatch, createPatch, parsePatch, reversePatch } from "diff";
+import { applyPatch } from "diff";
+import { collectTurns, cumulativeChange, FileChange, unapply } from "./patches";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
 
@@ -35,7 +36,9 @@ interface Tab {
   key: string;
   sessionID?: string;
   title: string;
-  status: "idle" | "busy" | "attention";
+  busy: boolean;
+  /** Permission / question requests waiting for the user. */
+  pending: Set<string>;
   directory: string;
   worktree?: Worktree;
   children: Set<string>;
@@ -56,7 +59,17 @@ export interface ChatHost {
   reveal(): void;
   reportStatus(status: ChatStatus): void;
   openSettings(): void;
+  /** Workspace storage, used to remember which messages were /commands. */
+  memento: vscode.Memento;
 }
+
+interface CommandMeta {
+  name: string;
+  arguments: string;
+  sessionID: string;
+}
+
+const COMMANDS_KEY = "opencode.commandMessages";
 
 /** Session permission rules. Shell commands always ask; edits ask unless auto-approved. */
 function rulesFor(autoEdit: boolean) {
@@ -67,6 +80,8 @@ function rulesFor(autoEdit: boolean) {
 }
 
 let tabCounter = 0;
+/** Shared across controllers so one event shown in two views notifies only once. */
+const recentNotifications = new Map<string, number>();
 
 /** Connects one webview (side bar or editor tab) to a set of OpenCode conversation tabs. */
 export class ChatController implements vscode.Disposable {
@@ -80,7 +95,7 @@ export class ChatController implements vscode.Disposable {
   private diffTimer: NodeJS.Timeout | undefined;
   private lastEditor: vscode.TextEditor | undefined;
   private ready = false;
-  private pendingPrompts: SendRequest[] = [];
+  private pendingPrompts: { text: string; mentions: Mention[] }[] = [];
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -124,7 +139,8 @@ export class ChatController implements vscode.Disposable {
     const tab: Tab = {
       key: `t${++tabCounter}`,
       title: "New conversation",
-      status: "idle",
+      busy: false,
+      pending: new Set(),
       directory: this.server.directory,
       children: new Set(),
       ...init,
@@ -141,7 +157,7 @@ export class ChatController implements vscode.Disposable {
       tabs: this.tabs.map((t) => ({
         key: t.key,
         title: t.title,
-        status: t.status,
+        status: this.statusOf(t),
         worktree: t.worktree ? { name: t.worktree.name, branch: t.worktree.branch } : undefined,
       })),
     });
@@ -151,8 +167,8 @@ export class ChatController implements vscode.Disposable {
 
   private reportStatus() {
     this.host.reportStatus({
-      busy: this.tabs.some((t) => t.status === "busy"),
-      attention: this.tabs.some((t) => t.status === "attention"),
+      busy: this.tabs.some((t) => t.busy),
+      attention: this.tabs.some((t) => t.pending.size > 0),
       agent: this.agent,
       model: this.model,
     });
@@ -180,17 +196,15 @@ export class ChatController implements vscode.Disposable {
   }
 
   /** Send a prompt from outside the webview (code actions, editor context menu). */
-  sendPrompt(text: string, mentions: Mention[]) {
-    const req: SendRequest = {
-      text,
-      mentions,
-      images: [],
-      includeSelection: false,
-      agent: this.agent,
-      autoEdit: this.autoEdit,
-    };
+  async sendPrompt(text: string, mentions: Mention[]) {
+    // Editor actions refer to files in the main workspace, so don't send them into a worktree tab.
+    if (this.tab.worktree) {
+      const main = [...this.tabs].reverse().find((t) => !t.worktree);
+      if (main) await this.switchTab(main.key);
+      else this.newSession();
+    }
     if (!this.ready) {
-      this.pendingPrompts.push(req);
+      this.pendingPrompts.push({ text, mentions });
       return;
     }
     this.post({ type: "externalPrompt", text, mentions });
@@ -239,7 +253,11 @@ export class ChatController implements vscode.Disposable {
     return rel.startsWith("..") ? fsPath : rel;
   }
 
-  /** Absolute path in the active tab's directory. */
+  /**
+   * Absolute path in the active tab's directory. Relative paths (mentions, file references, diffs)
+   * deliberately resolve against the active tree, so in a worktree tab they point at the worktree's
+   * copy of the file, which is the one the agent is working on.
+   */
   private absolute(p: string) {
     return path.isAbsolute(p) ? p : path.join(this.dir, p);
   }
@@ -292,15 +310,15 @@ export class ChatController implements vscode.Disposable {
         return;
       case "permissionReply":
         await this.req("POST", `/permission/${msg.id}/reply`, { reply: msg.reply, message: msg.message || undefined });
-        this.clearAttention();
+        this.resolvePending(msg.id);
         return;
       case "questionReply":
         await this.req("POST", `/question/${msg.id}/reply`, { answers: msg.answers });
-        this.clearAttention();
+        this.resolvePending(msg.id);
         return;
       case "questionReject":
         await this.req("POST", `/question/${msg.id}/reject`);
-        this.clearAttention();
+        this.resolvePending(msg.id);
         return;
       case "searchFiles": {
         const results = await this.searchFiles(msg.query);
@@ -309,9 +327,13 @@ export class ChatController implements vscode.Disposable {
       }
       case "openFile":
         return this.openFile(msg.path, msg.line);
+      case "openExternal":
+        if (/^https?:\/\//.test(msg.url)) await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        return;
       case "openDiff":
         return this.openDiff(msg.filePath, msg.diff, msg.before, msg.after);
       case "revert":
+        if (!(await this.confirmIfBusy("Undo"))) return;
         return this.revert(msg.messageID);
       case "unrevert": {
         if (!this.sessionID) return;
@@ -322,9 +344,7 @@ export class ChatController implements vscode.Disposable {
       case "discardFile":
         return this.discardFile(msg.file, msg.patch, msg.status);
       case "compact":
-        if (!this.sessionID || !msg.model) return;
-        await this.req("POST", `/session/${this.sessionID}/summarize`, msg.model);
-        return;
+        return this.compact(msg.model, !!msg.ask);
       case "share":
         return this.share();
       case "unshare":
@@ -406,7 +426,6 @@ export class ChatController implements vscode.Disposable {
     const tab = this.tabs.find((t) => t.key === key);
     if (!tab) return;
     this.activeKey = key;
-    if (tab.status === "attention") tab.status = "idle";
     if (tab.sessionID) await this.loadSession(tab.sessionID);
     else this.post({ type: "session", session: null, messages: [], worktree: tab.worktree });
     this.sendTabs();
@@ -427,7 +446,8 @@ export class ChatController implements vscode.Disposable {
   private async openSession(id: string) {
     const existing = this.tabs.find((t) => t.sessionID === id);
     if (existing) return this.switchTab(existing.key);
-    if (this.tab.sessionID) this.addTab();
+    // Only reuse an empty, non-worktree draft; otherwise open a fresh tab.
+    if (this.tab.sessionID || this.tab.worktree) this.addTab();
     const session = await this.server.request<any>("GET", `/session/${id}`);
     this.tab.sessionID = id;
     this.tab.directory = session.directory || this.server.directory;
@@ -453,9 +473,13 @@ export class ChatController implements vscode.Disposable {
       this.req<any>("GET", `/session/${id}`),
       this.req<any[]>("GET", `/session/${id}/message`),
     ]);
-    if (tab.sessionID !== id) return;
+    // The user may have switched tabs (or this tab to another session) while loading.
+    if (tab !== this.tab || tab.sessionID !== id) return;
     tab.title = session.title || tab.title;
     this.post({ type: "session", session, messages, worktree: tab.worktree });
+    const commands = this.host.memento.get<Record<string, CommandMeta>>(COMMANDS_KEY, {});
+    const entries = messages.filter((m: any) => commands[m.info.id]).map((m: any) => ({ messageID: m.info.id, ...commands[m.info.id] }));
+    if (entries.length) this.post({ type: "commandMeta", entries });
     // Subagent sessions started by task steps.
     for (const m of messages) {
       for (const p of m.parts) {
@@ -538,8 +562,47 @@ export class ChatController implements vscode.Disposable {
     await this.sendDiff();
   }
 
+  /** Webviews can't show confirm() dialogs, so ask in VS Code before interrupting a run. */
+  private async confirmIfBusy(action: string) {
+    if (!this.tab.busy) return true;
+    const ok = await vscode.window.showWarningMessage(
+      `OpenCode is still working. Stop it and ${action.toLowerCase()}?`,
+      { modal: true },
+      action,
+    );
+    return ok === action;
+  }
+
+  private async compact(model: { providerID: string; modelID: string } | undefined, ask: boolean) {
+    const sessionID = this.sessionID;
+    if (!sessionID) {
+      vscode.window.showInformationMessage("Nothing to compact yet.");
+      return;
+    }
+    if (ask) {
+      const ok = await vscode.window.showWarningMessage(
+        "Compact this conversation? OpenCode will summarize it to free up context.",
+        { modal: true },
+        "Compact",
+      );
+      if (ok !== "Compact") return;
+    }
+    if (!model) {
+      // No model picked in the UI: use the one the conversation last ran on.
+      const messages = await this.req<any[]>("GET", `/session/${sessionID}/message`);
+      const last = [...messages].reverse().find((m) => m.info.role === "assistant" && m.info.modelID)?.info;
+      if (last) model = { providerID: last.providerID, modelID: last.modelID };
+    }
+    if (!model) throw new Error("Pick a model first; compacting needs one to write the summary.");
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Compacting conversation…" },
+      () => this.req("POST", `/session/${sessionID}/summarize`, model),
+    );
+  }
+
   /** Undo back to an earlier message, then send its edited text in its place. */
   private async editResend(messageID: string, req: SendRequest) {
+    if (!(await this.confirmIfBusy("Resend"))) return;
     await this.revert(messageID);
     await this.send(req);
   }
@@ -747,18 +810,8 @@ export class ChatController implements vscode.Disposable {
       this.req<any>("GET", `/session/${sessionID}`),
       this.req<any[]>("GET", `/session/${sessionID}/message`),
     ]);
-    const revertID: string | undefined = session.revert?.messageID;
-    const perFile = new Map<string, { patch: string; status?: string }[]>();
-    for (const m of messages) {
-      if (m.info.role !== "user" || (revertID && m.info.id >= revertID)) continue;
-      for (const d of m.info.summary?.diffs ?? []) {
-        if (!d.file || !d.patch) continue;
-        if (!perFile.has(d.file)) perFile.set(d.file, []);
-        perFile.get(d.file)!.push({ patch: d.patch, status: d.status });
-      }
-    }
-    const diff: { file: string; patch: string; additions: number; deletions: number; status: string }[] = [];
-    for (const [file, turns] of perFile) {
+    const diff: FileChange[] = [];
+    for (const [file, turns] of collectTurns(messages, session.revert?.messageID)) {
       const uri = vscode.Uri.file(this.absolute(file));
       let exists = true;
       try {
@@ -766,37 +819,11 @@ export class ChatController implements vscode.Disposable {
       } catch {
         exists = false;
       }
-      const current = exists ? await this.readText(uri) : "";
-      let original: string | false = current;
-      for (const t of [...turns].reverse()) {
-        original = original === false ? false : this.unapply(original, t.patch);
-      }
-      const created = turns[0].status === "added";
-      if (original === false) {
-        // File changed outside OpenCode since; fall back to the latest turn's patch.
-        const last = turns[turns.length - 1];
-        diff.push({ file, patch: last.patch, status: last.status ?? "modified", ...this.countLines(last.patch) });
-        continue;
-      }
-      if (original === current && exists) continue;
-      const patch = createPatch(file, created ? "" : original, current);
-      const status = created ? "added" : !exists ? "deleted" : "modified";
-      diff.push({ file, patch, status, ...this.countLines(patch) });
+      const change = cumulativeChange(file, turns, exists ? await this.readText(uri) : "", exists);
+      if (change) diff.push(change);
     }
     if (sessionID !== this.sessionID) return;
     this.post({ type: "event", event: { type: "session.diff", properties: { sessionID, diff } } });
-  }
-
-  private countLines(patch: string) {
-    let additions = 0;
-    let deletions = 0;
-    for (const hunk of parsePatch(patch)[0]?.hunks ?? []) {
-      for (const l of hunk.lines) {
-        if (l[0] === "+") additions++;
-        else if (l[0] === "-") deletions++;
-      }
-    }
-    return { additions, deletions };
   }
 
   private async readText(uri: vscode.Uri) {
@@ -805,13 +832,6 @@ export class ChatController implements vscode.Disposable {
     } catch {
       return "";
     }
-  }
-
-  /** Content of a file before an already-applied patch. */
-  private unapply(current: string, diffText: string): string | false {
-    const [patch] = parsePatch(diffText);
-    if (!patch) return false;
-    return applyPatch(current, reversePatch(patch));
   }
 
   private async openDiff(filePath: string, diffText?: string, before?: string, after?: string) {
@@ -838,7 +858,7 @@ export class ChatController implements vscode.Disposable {
       return show(uri, this.diffs.register(`${name} (proposed)`, proposed), `${name} ↔ proposed`);
     }
     // Already applied: show original vs the live, editable file.
-    const original = this.unapply(current, diffText);
+    const original = unapply(current, diffText);
     if (original !== false) {
       return show(this.diffs.register(`${name} (before)`, original), uri, `${name} (changes by OpenCode)`);
     }
@@ -858,7 +878,7 @@ export class ChatController implements vscode.Disposable {
     if (status === "added") {
       await vscode.workspace.fs.delete(uri, { useTrash: true });
     } else {
-      const original = this.unapply(await this.readText(uri), diffText);
+      const original = unapply(await this.readText(uri), diffText);
       if (original === false) {
         vscode.window.showErrorMessage(`Couldn't discard changes to ${file}: it has changed since OpenCode edited it.`);
         return;
@@ -875,17 +895,34 @@ export class ChatController implements vscode.Disposable {
     return this.tabs.find((t) => t.sessionID === sessionID || t.children.has(sessionID));
   }
 
-  private clearAttention() {
-    if (this.tab.status === "attention") {
-      this.tab.status = "busy";
-      this.sendTabs();
-    }
+  /** OpenCode stores a /command as its expanded prompt; remember the name so it can be shown as typed. */
+  private rememberCommand(messageID: string, meta: CommandMeta) {
+    const all = { ...this.host.memento.get<Record<string, CommandMeta>>(COMMANDS_KEY, {}), [messageID]: meta };
+    const ids = Object.keys(all).sort();
+    for (const old of ids.slice(0, Math.max(0, ids.length - 1000))) delete all[old];
+    this.host.memento.update(COMMANDS_KEY, all);
+  }
+
+  private statusOf(t: Tab): "idle" | "busy" | "attention" {
+    return t.pending.size ? "attention" : t.busy ? "busy" : "idle";
+  }
+
+  /** A permission / question request was answered (here or elsewhere). */
+  private resolvePending(requestID: string | undefined) {
+    if (!requestID) return;
+    const tab = this.tabs.find((t) => t.pending.has(requestID));
+    if (tab?.pending.delete(requestID)) this.sendTabs();
   }
 
   private notify(tab: Tab, kind: "done" | "attention") {
     if (!vscode.workspace.getConfiguration("opencode").get<boolean>("notifications", true)) return;
     const visible = this.host.isVisible() && vscode.window.state.focused && tab.key === this.activeKey;
     if (visible) return;
+    // The same session can be open in the side bar and an editor tab; notify once.
+    const key = `${kind}:${tab.sessionID}`;
+    const now = Date.now();
+    if ((recentNotifications.get(key) ?? 0) > now - 10000) return;
+    recentNotifications.set(key, now);
     const name = tab.sessionID ? `"${tab.title}"` : "OpenCode";
     const show = kind === "attention" ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
     const text = kind === "attention" ? `OpenCode needs your approval in ${name}.` : `OpenCode finished ${name}.`;
@@ -903,11 +940,18 @@ export class ChatController implements vscode.Disposable {
       if (parentTab) parentTab.children.add(p.info.id);
       return;
     }
-    const sid: string | undefined = p.sessionID ?? p.info?.sessionID ?? p.part?.sessionID ?? p.info?.id;
+    const sid: string | undefined =
+      p.sessionID ?? p.info?.sessionID ?? p.part?.sessionID ?? (e.type.startsWith("session.") ? p.info?.id : undefined);
     const tab = this.tabFor(sid);
     if (!tab) return;
     const isMain = sid === tab.sessionID;
     const active = tab.key === this.activeKey;
+
+    if (e.type === "command.executed" && p.messageID) {
+      this.rememberCommand(p.messageID, { name: p.name, arguments: p.arguments ?? "", sessionID: sid! });
+      if (active) this.post({ type: "commandMeta", entries: [{ messageID: p.messageID, name: p.name, arguments: p.arguments ?? "" }] });
+      return;
+    }
 
     // Tab status, titles and notifications for every tab, active or not.
     if (isMain && e.type === "session.updated" && p.info?.title && p.info.title !== tab.title) {
@@ -916,18 +960,23 @@ export class ChatController implements vscode.Disposable {
     }
     if (isMain && e.type === "session.status") {
       const busy = p.status?.type !== "idle";
-      const was = tab.status;
-      if (busy && was === "idle") tab.status = "busy";
-      if (!busy && was !== "idle") {
-        tab.status = "idle";
-        this.notify(tab, "done");
+      if (busy !== tab.busy) {
+        tab.busy = busy;
+        if (!busy) {
+          // Anything still pending was cancelled along with the run.
+          tab.pending.clear();
+          this.notify(tab, "done");
+        }
+        this.sendTabs();
       }
-      if (tab.status !== was) this.sendTabs();
     }
-    if (e.type === "permission.asked" || e.type === "question.asked") {
-      tab.status = "attention";
+    if ((e.type === "permission.asked" || e.type === "question.asked") && p.id && !tab.pending.has(p.id)) {
+      tab.pending.add(p.id);
       this.sendTabs();
       this.notify(tab, "attention");
+    }
+    if (e.type === "permission.replied" || e.type === "question.replied" || e.type === "question.rejected") {
+      this.resolvePending(p.requestID ?? p.id);
     }
 
     if (!active) return;

@@ -57,14 +57,19 @@ whatever providers, models, agents and commands you've configured for the openco
 ```bash
 npm install
 npm run package   # produces opencode-vscode-<version>.vsix
-code --install-extension opencode-vscode-0.3.0.vsix
+code --install-extension opencode-vscode-0.3.1.vsix
 ```
 
 For development, open this folder in VS Code and press F5.
 
+```bash
+npm test          # unit tests (event-stream parsing, change reconstruction)
+npm run typecheck
+```
+
 ## Releasing
 
-CI builds and packages every push and pull request (the `.vsix` is attached to the run as an artifact).
+CI typechecks, tests, builds and packages every push and pull request (the `.vsix` is attached to the run as an artifact).
 
 To publish a release, bump the version and push the tag:
 

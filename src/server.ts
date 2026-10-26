@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { spawn, ChildProcess } from "child_process";
+import { ListenUrlWatcher, SseParser, unwrapGlobalEvent } from "./streams";
 
 export interface OpencodeEvent {
   type: string;
@@ -42,6 +43,7 @@ export class OpencodeServer implements vscode.Disposable {
         env: { ...process.env },
       });
       this.proc = proc;
+      const watcher = new ListenUrlWatcher();
       let settled = false;
       const timer = setTimeout(() => fail(new Error("Timed out waiting for opencode serve to start")), 30000);
       const fail = (err: Error) => {
@@ -54,11 +56,11 @@ export class OpencodeServer implements vscode.Disposable {
       const onData = (chunk: Buffer) => {
         const text = chunk.toString();
         this.output.append(text);
-        const match = text.match(/listening on (https?:\/\/[^\s]+)/);
-        if (match && !settled) {
+        const url = settled ? undefined : watcher.feed(text);
+        if (url && this.proc === proc) {
           settled = true;
           clearTimeout(timer);
-          this.baseUrl = match[1].replace(/\/$/, "");
+          this.baseUrl = url;
           this.output.appendLine(`OpenCode server ready at ${this.baseUrl}`);
           this.statusEmitter.fire("ready");
           this.subscribe();
@@ -72,11 +74,13 @@ export class OpencodeServer implements vscode.Disposable {
       );
       proc.on("exit", (code) => {
         this.output.appendLine(`opencode serve exited with code ${code}`);
+        fail(new Error(`opencode serve exited with code ${code}`));
+        // A process we already replaced (restart) must not tear down its successor.
+        if (this.proc !== proc) return;
         this.baseUrl = undefined;
         this.proc = undefined;
         this.eventAbort?.abort();
         this.statusEmitter.fire("stopped");
-        fail(new Error(`opencode serve exited with code ${code}`));
       });
     });
   }
@@ -94,26 +98,11 @@ export class OpencodeServer implements vscode.Disposable {
         });
         if (!res.body) throw new Error("No event stream body");
         const decoder = new TextDecoder();
-        let buffer = "";
+        const parser = new SseParser();
         for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
-          buffer += decoder.decode(chunk, { stream: true });
-          let idx: number;
-          while ((idx = buffer.indexOf("\n\n")) >= 0) {
-            const raw = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            const data = raw
-              .split("\n")
-              .filter((l) => l.startsWith("data:"))
-              .map((l) => l.slice(5).trimStart())
-              .join("\n");
-            if (!data) continue;
-            try {
-              const parsed = JSON.parse(data);
-              const event = parsed.payload ? { ...parsed.payload, directory: parsed.directory } : parsed;
-              this.emitter.fire(event);
-            } catch {
-              // ignore malformed frames
-            }
+          for (const data of parser.feed(decoder.decode(chunk, { stream: true }))) {
+            const event = unwrapGlobalEvent(data);
+            if (event) this.emitter.fire(event);
           }
         }
       } catch (err: any) {
@@ -149,15 +138,25 @@ export class OpencodeServer implements vscode.Disposable {
   }
 
   async restart() {
-    this.stop();
+    await this.stop();
     await this.start();
   }
 
-  stop() {
+  /** Stop the server and wait for the process to exit (SIGKILL after 3s). */
+  stop(): Promise<void> {
     this.eventAbort?.abort();
-    this.proc?.kill();
+    const proc = this.proc;
     this.proc = undefined;
     this.baseUrl = undefined;
+    if (!proc || proc.exitCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+      const force = setTimeout(() => proc.kill("SIGKILL"), 3000);
+      proc.once("exit", () => {
+        clearTimeout(force);
+        resolve();
+      });
+      proc.kill();
+    });
   }
 
   dispose() {

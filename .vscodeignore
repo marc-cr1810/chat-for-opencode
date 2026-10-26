@@ -6,3 +6,5 @@ tsconfig.json
 **/*.map
 .vscode/**
 .github/**
+test/**
+vitest.config.*
