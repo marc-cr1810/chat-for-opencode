@@ -27,11 +27,11 @@ jobs:
       - run: npm run build
 
       - name: Package extension
-        run: npx vsce package --no-dependencies --out opencode-vscode-${{ github.sha }}.vsix
+        run: npx vsce package --no-dependencies --out chat-for-opencode-${{ github.sha }}.vsix
 
       - uses: actions/upload-artifact@v7
         with:
-          name: opencode-vscode-vsix
+          name: chat-for-opencode-vsix
           path: "*.vsix"
           if-no-files-found: error
           retention-days: 14

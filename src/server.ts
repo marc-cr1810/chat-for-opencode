@@ -35,7 +35,7 @@ export class OpencodeServer implements vscode.Disposable {
 
   private spawnServer(): Promise<string> {
     this.statusEmitter.fire("starting");
-    const bin = vscode.workspace.getConfiguration("opencode").get<string>("binaryPath") || "opencode";
+    const bin = vscode.workspace.getConfiguration("opencodeChat").get<string>("binaryPath") || "opencode";
     this.output.appendLine(`Starting ${bin} serve in ${this.directory}`);
     return new Promise((resolve, reject) => {
       const proc = spawn(bin, ["serve", "--port", "0", "--hostname", "127.0.0.1"], {
@@ -70,7 +70,7 @@ export class OpencodeServer implements vscode.Disposable {
       proc.stdout?.on("data", onData);
       proc.stderr?.on("data", onData);
       proc.on("error", (err) =>
-        fail(new Error(`Could not run "${bin}": ${err.message}. Set opencode.binaryPath in settings.`)),
+        fail(new Error(`Could not run "${bin}": ${err.message}. Set opencodeChat.binaryPath in settings.`)),
       );
       proc.on("exit", (code) => {
         this.output.appendLine(`opencode serve exited with code ${code}`);

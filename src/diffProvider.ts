@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 
 /** Serves in-memory "before"/"proposed" documents for the native diff editor. */
 export class DiffContentProvider implements vscode.TextDocumentContentProvider {
-  static readonly scheme = "opencode-diff";
+  static readonly scheme = "opencode-chat-diff";
   private readonly contents = new Map<string, string>();
   private counter = 0;
 

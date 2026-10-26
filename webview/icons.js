@@ -1,9 +1,10 @@
-// Small inline SVG icon set (stroke icons, inherit currentColor).
+// Small inline SVG icon set (stroke icons, inherit currentColor). The stroke icons are from Lucide
+// (https://lucide.dev, ISC license; see THIRD_PARTY_NOTICES.md). The logo is this extension's own.
 const svg = (body, size = 16) =>
   `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 
 export const icons = {
-  logo: `<svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" fill="currentColor" d="M4 3h16v18H4V3zm3 3v12h10V6H7z"/><rect x="9" y="9" width="6" height="6" fill="currentColor" opacity=".35"/></svg>`,
+  logo: `<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-6l-4 3.5V16a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z"/><path d="M8.5 8l2 2-2 2"/><path d="M12.5 12.5h3" opacity=".6"/></svg>`,
   copy: svg('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 14),
   check: svg('<path d="M20 6 9 17l-5-5"/>', 14),
   chevronDown: svg('<path d="m6 9 6 6 6-6"/>', 14),

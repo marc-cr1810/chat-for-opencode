@@ -35,13 +35,13 @@ jobs:
       - run: npm run build
 
       - name: Package extension
-        run: npx vsce package --no-dependencies --out "opencode-vscode-${VERSION}.vsix"
+        run: npx vsce package --no-dependencies --out "chat-for-opencode-${VERSION}.vsix"
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" "opencode-vscode-${VERSION}.vsix" \
+          gh release create "${GITHUB_REF_NAME}" "chat-for-opencode-${VERSION}.vsix" \
             --title "OpenCode for VS Code ${GITHUB_REF_NAME}" \
             --generate-notes \
             --verify-tag
@@ -51,10 +51,10 @@ jobs:
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         if: env.VSCE_PAT != ''
-        run: npx vsce publish --packagePath "opencode-vscode-${VERSION}.vsix"
+        run: npx vsce publish --packagePath "chat-for-opencode-${VERSION}.vsix"
 
       - name: Publish to Open VSX
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         if: env.OVSX_PAT != ''
-        run: npx --yes ovsx publish "opencode-vscode-${VERSION}.vsix" --pat "$OVSX_PAT"
+        run: npx --yes ovsx publish "chat-for-opencode-${VERSION}.vsix" --pat "$OVSX_PAT"

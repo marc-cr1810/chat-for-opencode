@@ -17,7 +17,7 @@ export class FixProvider implements vscode.CodeActionProvider {
       );
       action.diagnostics = [diagnostic];
       action.command = {
-        command: "opencode.fixDiagnostic",
+        command: "opencodeChat.fixDiagnostic",
         title: action.title,
         arguments: [document.uri, diagnostic, mode],
       };

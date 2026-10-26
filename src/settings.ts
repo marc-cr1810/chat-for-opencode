@@ -22,7 +22,7 @@ export class SettingsPanel {
     private readonly server: OpencodeServer,
     private readonly extensionId: string,
   ) {
-    this.panel = vscode.window.createWebviewPanel("opencode.settings", "OpenCode Settings", vscode.ViewColumn.Active, {
+    this.panel = vscode.window.createWebviewPanel("opencodeChat.settings", "OpenCode Settings", vscode.ViewColumn.Active, {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media")],
     });

@@ -1098,7 +1098,7 @@ function renderQuestion(q) {
         if (d.answers[idx].has(o.label)) d.answers[idx].delete(o.label);
         else d.answers[idx].add(o.label);
         mark();
-        // Picking a single answer moves on, like Claude Code.
+        // Picking a single answer moves on to the next question.
         if (!qi.multiple && d.answers[idx].size) multi ? go(idx + 1) : submit();
       });
       opts.append(btn);
@@ -1934,7 +1934,7 @@ function tabStatus(t) {
   return null;
 }
 
-/** No tab strip, as in Claude Code: the title shows when another open conversation is working or needs you. */
+/** No tab strip: the title shows when another open conversation is working or needs you. */
 function renderTabs(tabs, active) {
   state.tabs = tabs;
   state.activeTab = active;

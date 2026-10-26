@@ -1,8 +1,8 @@
 {
-  "name": "opencode-vscode",
-  "displayName": "OpenCode for VS Code",
-  "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.4.3",
+  "name": "chat-for-opencode",
+  "displayName": "Chat for OpenCode",
+  "description": "Unofficial chat panel for OpenCode agents in VS Code's side bar. Not affiliated with or endorsed by OpenCode.",
+  "version": "0.5.0",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -25,152 +25,152 @@
     "viewsContainers": {
       "secondarySidebar": [
         {
-          "id": "opencode-sidebar",
-          "title": "OpenCode",
+          "id": "opencodeChat-sidebar",
+          "title": "Chat for OpenCode",
           "icon": "media/icon-mono.svg"
         }
       ]
     },
     "views": {
-      "opencode-sidebar": [
+      "opencodeChat-sidebar": [
         {
           "type": "webview",
-          "id": "opencode.chatView",
-          "name": "OpenCode"
+          "id": "opencodeChat.chatView",
+          "name": "Chat for OpenCode"
         }
       ]
     },
     "commands": [
       {
-        "command": "opencode.openInTab",
-        "title": "OpenCode: Open in New Tab",
+        "command": "opencodeChat.openInTab",
+        "title": "Chat for OpenCode: Open in New Tab",
         "icon": "media/icon-mono.svg"
       },
       {
-        "command": "opencode.openInSidebar",
-        "title": "OpenCode: Open in Side Bar"
+        "command": "opencodeChat.openInSidebar",
+        "title": "Chat for OpenCode: Open in Side Bar"
       },
       {
-        "command": "opencode.focus",
-        "title": "OpenCode: Focus Input"
+        "command": "opencodeChat.focus",
+        "title": "Chat for OpenCode: Focus Input"
       },
       {
-        "command": "opencode.newSession",
-        "title": "OpenCode: New Conversation"
+        "command": "opencodeChat.newSession",
+        "title": "Chat for OpenCode: New Conversation"
       },
       {
-        "command": "opencode.insertAtMention",
+        "command": "opencodeChat.insertAtMention",
         "title": "Add Selection to Prompt",
-        "category": "OpenCode"
+        "category": "Chat for OpenCode"
       },
       {
-        "command": "opencode.restartServer",
-        "title": "OpenCode: Restart Server"
+        "command": "opencodeChat.restartServer",
+        "title": "Chat for OpenCode: Restart Server"
       },
       {
-        "command": "opencode.explainSelection",
+        "command": "opencodeChat.explainSelection",
         "title": "Explain",
-        "category": "OpenCode"
+        "category": "Chat for OpenCode"
       },
       {
-        "command": "opencode.refactorSelection",
+        "command": "opencodeChat.refactorSelection",
         "title": "Refactor",
-        "category": "OpenCode"
+        "category": "Chat for OpenCode"
       },
       {
-        "command": "opencode.testSelection",
+        "command": "opencodeChat.testSelection",
         "title": "Write Tests",
-        "category": "OpenCode"
+        "category": "Chat for OpenCode"
       },
       {
-        "command": "opencode.fixDiagnostic",
+        "command": "opencodeChat.fixDiagnostic",
         "title": "Fix with OpenCode"
       },
       {
-        "command": "opencode.openSettingsPanel",
-        "title": "OpenCode: Settings (Providers, MCP)"
+        "command": "opencodeChat.openSettingsPanel",
+        "title": "Chat for OpenCode: Settings (Providers, MCP)"
       }
     ],
     "menus": {
       "editor/title": [
         {
-          "command": "opencode.openInTab",
+          "command": "opencodeChat.openInTab",
           "group": "navigation@100"
         }
       ],
       "editor/context": [
         {
-          "submenu": "opencode.editorContext",
+          "submenu": "opencodeChat.editorContext",
           "group": "1_opencode@1"
         }
       ],
-      "opencode.editorContext": [
+      "opencodeChat.editorContext": [
         {
-          "command": "opencode.explainSelection",
+          "command": "opencodeChat.explainSelection",
           "group": "1_ask@1"
         },
         {
-          "command": "opencode.refactorSelection",
+          "command": "opencodeChat.refactorSelection",
           "group": "1_ask@2"
         },
         {
-          "command": "opencode.testSelection",
+          "command": "opencodeChat.testSelection",
           "group": "1_ask@3"
         },
         {
-          "command": "opencode.insertAtMention",
+          "command": "opencodeChat.insertAtMention",
           "group": "2_prompt@1"
         }
       ],
       "commandPalette": [
         {
-          "command": "opencode.fixDiagnostic",
+          "command": "opencodeChat.fixDiagnostic",
           "when": "false"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "opencode.focus",
+        "command": "opencodeChat.focus",
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o"
       },
       {
-        "command": "opencode.openInTab",
+        "command": "opencodeChat.openInTab",
         "key": "ctrl+alt+shift+o",
         "mac": "cmd+alt+shift+o"
       },
       {
-        "command": "opencode.insertAtMention",
+        "command": "opencodeChat.insertAtMention",
         "key": "ctrl+alt+k",
         "mac": "cmd+alt+k",
         "when": "editorTextFocus"
       }
     ],
     "configuration": {
-      "title": "OpenCode",
+      "title": "Chat for OpenCode",
       "properties": {
-        "opencode.binaryPath": {
+        "opencodeChat.binaryPath": {
           "type": "string",
           "default": "opencode",
           "description": "Path to the opencode executable."
         },
-        "opencode.autoApproveEdits": {
+        "opencodeChat.autoApproveEdits": {
           "type": "boolean",
           "default": false,
           "description": "Apply file edits without asking in new conversations. Shell commands always ask."
         },
-        "opencode.autoApproveReadOnly": {
+        "opencodeChat.autoApproveReadOnly": {
           "type": "boolean",
           "default": false,
           "description": "In read-only agents such as plan, run read-only shell commands (ls, grep, git log…) without asking. Commands with redirects or write/exec flags still ask."
         },
-        "opencode.model": {
+        "opencodeChat.model": {
           "type": "string",
           "default": "",
           "description": "Default model as provider/model (e.g. opencode/big-pickle). Empty uses OpenCode's default."
         },
-        "opencode.preferredLocation": {
+        "opencodeChat.preferredLocation": {
           "type": "string",
           "enum": [
             "panel",
@@ -179,17 +179,17 @@
           "default": "sidebar",
           "description": "Where Ctrl+Alt+O opens OpenCode when no chat is open."
         },
-        "opencode.notifications": {
+        "opencodeChat.notifications": {
           "type": "boolean",
           "default": true,
           "description": "Show a notification when OpenCode finishes or needs approval while no visible OpenCode panel has that conversation open."
         },
-        "opencode.defaultAgent": {
+        "opencodeChat.defaultAgent": {
           "type": "string",
           "default": "",
           "markdownDescription": "Agent a new conversation starts in, such as `build` or `plan`. Empty uses OpenCode's default."
         },
-        "opencode.sendKey": {
+        "opencodeChat.sendKey": {
           "type": "string",
           "enum": [
             "enter",
@@ -202,12 +202,12 @@
           "default": "enter",
           "description": "Key that sends a message."
         },
-        "opencode.includeSelection": {
+        "opencodeChat.includeSelection": {
           "type": "boolean",
           "default": true,
           "description": "Share the current editor file and selection with OpenCode by default. You can still toggle it per message with the eye button."
         },
-        "opencode.reasoning": {
+        "opencodeChat.reasoning": {
           "type": "string",
           "enum": [
             "collapsed",
@@ -216,7 +216,7 @@
           "default": "collapsed",
           "description": "Whether the model's reasoning starts collapsed or expanded."
         },
-        "opencode.toolOutput": {
+        "opencodeChat.toolOutput": {
           "type": "string",
           "enum": [
             "auto",
@@ -231,25 +231,25 @@
           "default": "auto",
           "description": "Which tool steps start expanded."
         },
-        "opencode.notifyWhenFinished": {
+        "opencodeChat.notifyWhenFinished": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Notify when a task finishes. Turn off to only be notified when OpenCode needs your approval. Has no effect when `#opencode.notifications#` is off."
+          "markdownDescription": "Notify when a task finishes. Turn off to only be notified when OpenCode needs your approval. Has no effect when `#opencodeChat.notifications#` is off."
         },
-        "opencode.contextWarningPercent": {
+        "opencodeChat.contextWarningPercent": {
           "type": "number",
           "default": 75,
           "minimum": 1,
           "maximum": 100,
           "description": "How full the context window gets (in %) before the context meter turns amber and suggests compacting. It turns red at 90%, or at this value if it's higher."
         },
-        "opencode.stallWarningSeconds": {
+        "opencodeChat.stallWarningSeconds": {
           "type": "number",
           "default": 30,
           "minimum": 0,
           "description": "Show a warning when the model hasn't sent anything for this many seconds. Time spent running tools doesn't count. 0 turns it off."
         },
-        "opencode.responseTimeoutSeconds": {
+        "opencodeChat.responseTimeoutSeconds": {
           "type": "number",
           "default": 0,
           "minimum": 0,
@@ -259,8 +259,8 @@
     },
     "submenus": [
       {
-        "id": "opencode.editorContext",
-        "label": "OpenCode"
+        "id": "opencodeChat.editorContext",
+        "label": "Chat for OpenCode"
       }
     ]
   },

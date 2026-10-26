@@ -107,8 +107,8 @@ export class ChatController implements vscode.Disposable {
     private readonly diffs: DiffContentProvider,
     private readonly host: ChatHost,
   ) {
-    this.autoEdit = vscode.workspace.getConfiguration("opencode").get<boolean>("autoApproveEdits") ?? false;
-    this.autoRead = vscode.workspace.getConfiguration("opencode").get<boolean>("autoApproveReadOnly") ?? false;
+    this.autoEdit = vscode.workspace.getConfiguration("opencodeChat").get<boolean>("autoApproveEdits") ?? false;
+    this.autoRead = vscode.workspace.getConfiguration("opencodeChat").get<boolean>("autoApproveReadOnly") ?? false;
     this.addTab();
     liveControllers.add(this);
     webview.options = {
@@ -122,13 +122,13 @@ export class ChatController implements vscode.Disposable {
       server.onStatus((s) => this.post({ type: "serverStatus", status: s })),
       vscode.window.onDidChangeTextEditorSelection(() => this.queueSelection()),
       vscode.window.onDidChangeActiveTextEditor(() => this.queueSelection()),
-      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration("opencode") && this.sendSettings()),
+      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration("opencodeChat") && this.sendSettings()),
     );
   }
 
   /** Panel behaviour the user can configure; sent on start and whenever the settings change. */
   private sendSettings() {
-    const cfg = vscode.workspace.getConfiguration("opencode");
+    const cfg = vscode.workspace.getConfiguration("opencodeChat");
     this.post({
       type: "settings",
       settings: {
@@ -205,7 +205,7 @@ export class ChatController implements vscode.Disposable {
         worktree: t.worktree ? { name: t.worktree.name, branch: t.worktree.branch } : undefined,
       })),
     });
-    this.host.setTitle(this.tab.sessionID ? this.tab.title : "OpenCode");
+    this.host.setTitle(this.tab.sessionID ? this.tab.title : "Chat for OpenCode");
     this.reportStatus();
   }
 
@@ -477,7 +477,7 @@ export class ChatController implements vscode.Disposable {
       }
     }
     let defaultModel: { providerID: string; modelID: string } | undefined;
-    const configured = vscode.workspace.getConfiguration("opencode").get<string>("model");
+    const configured = vscode.workspace.getConfiguration("opencodeChat").get<string>("model");
     const cfgModel = configured || (await this.server.request<any>("GET", "/config")).model;
     if (cfgModel && cfgModel.includes("/")) {
       const [providerID, ...rest] = cfgModel.split("/");
@@ -508,7 +508,7 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * Switching away from a conversation keeps it open only while it still needs the panel: it's running,
-   * waiting for an answer, or in a worktree. Anything else is just history, like Claude Code's dropdown.
+   * waiting for an answer, or in a worktree. Anything else is just history.
    */
   private leave(tab: Tab | undefined) {
     if (!tab || tab.busy || tab.pending.size || tab.worktree) return;
@@ -1020,7 +1020,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   private notify(tab: Tab, kind: "done" | "attention") {
-    const cfg = vscode.workspace.getConfiguration("opencode");
+    const cfg = vscode.workspace.getConfiguration("opencodeChat");
     if (!cfg.get<boolean>("notifications", true)) return;
     if (kind === "done" && !cfg.get<boolean>("notifyWhenFinished", true)) return;
     // A visible panel with this conversation open already shows its state (the tab strip marks busy / needs you).

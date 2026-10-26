@@ -10,7 +10,8 @@ import { SettingsPanel } from "./settings";
 let server: OpencodeServer | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-  const output = vscode.window.createOutputChannel("OpenCode");
+  migrateSettings(context).catch(() => {});
+  const output = vscode.window.createOutputChannel("Chat for OpenCode");
   const directory = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
   server = new OpencodeServer(output, directory);
   const diffs = new DiffContentProvider();
@@ -36,7 +37,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // --------------------------------------------------------------- status bar
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.command = "opencode.focus";
+  statusBar.command = "opencodeChat.focus";
   const renderStatusBar = () => {
     const all = [...statuses.values()];
     const shown = (lastActive && statuses.get(lastActive.controller)) ?? all[0];
@@ -80,7 +81,7 @@ export function activate(context: vscode.ExtensionContext) {
   // ------------------------------------------------------------- side bar view
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
-      "opencode.chatView",
+      "opencodeChat.chatView",
       {
         resolveWebviewView(view) {
           const reveal = () => view.show(false);
@@ -90,7 +91,7 @@ export function activate(context: vscode.ExtensionContext) {
             context.extensionUri,
             diffs,
             makeHost({
-              setTitle: (title) => (view.description = title === "OpenCode" ? undefined : title),
+              setTitle: (title) => (view.description = title === "Chat for OpenCode" ? undefined : title),
               isVisible: () => view.visible,
               reveal,
               controller: () => controller,
@@ -113,8 +114,8 @@ export function activate(context: vscode.ExtensionContext) {
   // -------------------------------------------------------------- editor tabs
   const openInTab = () => {
     const panel = vscode.window.createWebviewPanel(
-      "opencode.chatPanel",
-      "OpenCode",
+      "opencodeChat.chatPanel",
+      "Chat for OpenCode",
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { retainContextWhenHidden: true, enableScripts: true },
     );
@@ -147,7 +148,7 @@ export function activate(context: vscode.ExtensionContext) {
           sidebarWaiters.push(resolve);
           setTimeout(() => resolve(undefined), 5000);
         });
-    await vscode.commands.executeCommand("workbench.view.extension.opencode-sidebar");
+    await vscode.commands.executeCommand("workbench.view.extension.opencodeChat-sidebar");
     const controller = await ready;
     setTimeout(() => controller?.focus(), 200);
     return controller;
@@ -158,7 +159,7 @@ export function activate(context: vscode.ExtensionContext) {
       lastActive.reveal();
       return lastActive.controller;
     }
-    const where = vscode.workspace.getConfiguration("opencode").get<string>("preferredLocation");
+    const where = vscode.workspace.getConfiguration("opencodeChat").get<string>("preferredLocation");
     if (where === "sidebar") return (await openSidebar()) ?? openInTab();
     return openInTab();
   };
@@ -195,18 +196,18 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.languages.registerCodeActionsProvider({ scheme: "file" }, new FixProvider(), {
       providedCodeActionKinds: FixProvider.kinds,
     }),
-    vscode.commands.registerCommand("opencode.openInTab", openInTab),
-    vscode.commands.registerCommand("opencode.openInSidebar", openSidebar),
-    vscode.commands.registerCommand("opencode.focus", async () => {
+    vscode.commands.registerCommand("opencodeChat.openInTab", openInTab),
+    vscode.commands.registerCommand("opencodeChat.openInSidebar", openSidebar),
+    vscode.commands.registerCommand("opencodeChat.focus", async () => {
       const c = await ensureOpen();
       setTimeout(() => c?.focus(), 100);
     }),
-    vscode.commands.registerCommand("opencode.newSession", async () => {
+    vscode.commands.registerCommand("opencodeChat.newSession", async () => {
       const c = await ensureOpen();
       c?.newSession();
       c?.focus();
     }),
-    vscode.commands.registerCommand("opencode.insertAtMention", async () => {
+    vscode.commands.registerCommand("opencodeChat.insertAtMention", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const c = await ensureOpen();
@@ -214,21 +215,21 @@ export function activate(context: vscode.ExtensionContext) {
       c?.focus();
     }),
     vscode.commands.registerCommand(
-      "opencode.explainSelection",
+      "opencodeChat.explainSelection",
       askAboutSelection((t) => `Explain ${t}. What does it do and why?`),
     ),
     vscode.commands.registerCommand(
-      "opencode.refactorSelection",
+      "opencodeChat.refactorSelection",
       askAboutSelection((t) => `Refactor ${t} to be clearer and simpler without changing its behaviour.`),
     ),
     vscode.commands.registerCommand(
-      "opencode.testSelection",
+      "opencodeChat.testSelection",
       askAboutSelection(
         (t) => `Write tests for ${t}. Follow the project's existing test setup and conventions, and run them.`,
       ),
     ),
     vscode.commands.registerCommand(
-      "opencode.fixDiagnostic",
+      "opencodeChat.fixDiagnostic",
       async (uri: vscode.Uri, diagnostic: vscode.Diagnostic, mode: "fix" | "explain") => {
         const doc = await vscode.workspace.openTextDocument(uri);
         const { text, mention } = diagnosticPrompt(doc, relPath(uri), diagnostic, mode);
@@ -236,8 +237,8 @@ export function activate(context: vscode.ExtensionContext) {
         c?.sendPrompt(text, [mention]);
       },
     ),
-    vscode.commands.registerCommand("opencode.openSettingsPanel", () => SettingsPanel.show(context.extensionUri, server!, context.extension.id)),
-    vscode.commands.registerCommand("opencode.restartServer", async () => {
+    vscode.commands.registerCommand("opencodeChat.openSettingsPanel", () => SettingsPanel.show(context.extensionUri, server!, context.extension.id)),
+    vscode.commands.registerCommand("opencodeChat.restartServer", async () => {
       await server?.restart();
       vscode.window.showInformationMessage("OpenCode server restarted.");
     }),
@@ -250,4 +251,23 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   return server?.stop();
+}
+
+/** Settings were under `opencode.*` before the rename, which clashed with OpenCode's own extension; copy them over once. */
+export async function migrateSettings(context: vscode.ExtensionContext) {
+  const keys = Object.keys(context.extension.packageJSON.contributes?.configuration?.properties ?? {});
+  const config = vscode.workspace.getConfiguration();
+  const scopes = [
+    ["globalValue", vscode.ConfigurationTarget.Global],
+    ["workspaceValue", vscode.ConfigurationTarget.Workspace],
+  ] as const;
+  for (const key of keys) {
+    const old = config.inspect(key.replace(/^opencodeChat\./, "opencode."));
+    const now = config.inspect(key);
+    for (const [scope, target] of scopes) {
+      if (old?.[scope] === undefined || now?.[scope] !== undefined) continue;
+      if (target === vscode.ConfigurationTarget.Workspace && !vscode.workspace.workspaceFolders) continue;
+      await config.update(key, old[scope], target);
+    }
+  }
 }
