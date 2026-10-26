@@ -18,10 +18,29 @@ const marked = new Marked({
       return `<div class="code-block"><div class="code-head"><span>${escapeHtml(lang || "")}</span><button class="icon-btn copy-code" title="Copy">${icons.copy}</button></div><pre><code>${escapeHtml(code)}</code></pre></div>`;
     },
     link(href, title, text) {
-      return `<a href="${escapeHtml(href)}" title="${escapeHtml(title || "")}">${text}</a>`;
+      const inner = text.replace(/<a class="file-ref"[^>]*>([\s\S]*?)<\/a>/g, "$1");
+      return `<a href="${escapeHtml(href)}" title="${escapeHtml(title || "")}">${inner}</a>`;
+    },
+    codespan(code) {
+      const m = code.match(FILE_REF_EXACT);
+      return m ? fileRef(m[1], m[2], m[3], `<code>${code}</code>`) : `<code>${code}</code>`;
+    },
+    text(text) {
+      return typeof text === "string" ? linkFileRefs(text) : false;
     },
   },
 });
+
+// File references like src/app.ts, app.ts:42 or src/app.ts:10-20 become clickable.
+const FILE_PATH = String.raw`((?:[\w@.-]+\/)+[\w@.-]+\.\w+|[\w@-][\w@.-]*\.(?:ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|md|json|jsonc|yml|yaml|toml|css|scss|html|vue|svelte|sh|sql|lua|zig|ex|exs))`;
+const FILE_REF_EXACT = new RegExp(String.raw`^${FILE_PATH}(?::(\d+)(?:-(\d+))?)?$`);
+const FILE_REF_IN_TEXT = new RegExp(String.raw`(?<![\w/.:@-])${FILE_PATH}(?::(\d+)(?:-(\d+))?)?(?![\w/])`, "g");
+function fileRef(path, line, end, inner) {
+  return `<a class="file-ref" href="#" data-path="${escapeHtml(path)}"${line ? ` data-line="${line}"` : ""} title="Open ${escapeHtml(path)}${line ? `:${line}${end ? `-${end}` : ""}` : ""}">${inner}</a>`;
+}
+function linkFileRefs(text) {
+  return text.replace(FILE_REF_IN_TEXT, (all, path, line, end) => fileRef(path, line, end, all));
+}
 const md = (text) => marked.parse(text || "");
 
 // --------------------------------------------------------------------- state
@@ -62,6 +81,9 @@ const state = {
   todosOpen: true,
   diff: [],
   changesOpen: false,
+  childParts: new Map(), // subagent sessionID -> Map(partID -> tool part)
+  childRequested: new Set(),
+  worktree: null,
   selection: null,
   includeSelection: true,
   images: [],
@@ -106,6 +128,8 @@ app.innerHTML = `
   </header>
   <div class="popover hidden" id="historyPop"></div>
   <div class="popover hidden" id="morePop"></div>
+  <nav class="tabbar hidden" id="tabbar"></nav>
+  <div class="worktree-bar hidden" id="worktreeBar"></div>
   <main class="messages" id="messages"></main>
   <div class="bottom">
     <div class="changes hidden" id="changes"></div>
@@ -260,12 +284,17 @@ function renderMessage(id) {
       h(
         "div",
         { class: "user-bubble" },
-        h("button", {
-          class: "icon-btn undo-btn",
-          title: "Undo to here: removes this message and everything after it, and restores files",
-          html: icons.undo,
-          onClick: () => undoTo(id),
-        }),
+        h(
+          "div",
+          { class: "msg-actions" },
+          h("button", { class: "icon-btn", title: "Edit and resend from here", html: icons.pencil, onClick: (e) => startEdit(id, e.target.closest(".user-bubble"), text) }),
+          h("button", {
+            class: "icon-btn",
+            title: "Undo to here: removes this message and everything after it, and restores files",
+            html: icons.undo,
+            onClick: () => undoTo(id),
+          }),
+        ),
         files.length
           ? h(
               "div",
@@ -436,8 +465,37 @@ function renderTool(p) {
     body = renderTodoList(todos);
     open = true;
   } else if (p.tool === "task") {
-    summary = h("span", { class: "tool-summary" }, st.input?.subagent_type ? `@${st.input.subagent_type}` : "");
-    if (st.output) body = h("div", { class: "markdown", html: md(st.output) });
+    const childID = meta.sessionId;
+    const steps = childID ? [...(state.childParts.get(childID)?.values() || [])].sort((a, b) => (a.id < b.id ? -1 : 1)) : [];
+    if (childID && !state.childParts.has(childID) && !state.childRequested.has(childID)) {
+      state.childRequested.add(childID);
+      send({ type: "loadChild", sessionID: childID });
+    }
+    const running = steps.filter((s) => s.state?.status === "running" || s.state?.status === "pending").length;
+    summary = h(
+      "span",
+      { class: "tool-summary" },
+      st.input?.subagent_type ? `@${st.input.subagent_type}` : "subagent",
+      steps.length ? ` · ${steps.length} step${steps.length === 1 ? "" : "s"}${running ? " (working)" : ""}` : "",
+    );
+    const nested = steps.length
+      ? h(
+          "div",
+          { class: "subagent-steps" },
+          steps.map((s) => {
+            const sum = toolSummary(s);
+            return h(
+              "div",
+              { class: "sub-step", title: sum.arg },
+              h("span", { class: `tool-icon status-${s.state?.status || "pending"}`, html: sum.icon }),
+              h("span", { class: "tool-name" }, sum.name),
+              sum.arg ? h("span", { class: `tool-arg ${sum.file ? "link" : ""}`, onClick: sum.file ? () => openPath(sum.file) : undefined }, sum.arg) : null,
+            );
+          }),
+        )
+      : null;
+    if (nested || st.output) body = h("div", {}, nested, st.output ? h("div", { class: "markdown subagent-result", html: md(st.output) }) : null);
+    open = status === "running" && !!nested;
   } else if (st.output) {
     const out = String(st.output);
     const lineCount = out.split("\n").length;
@@ -574,7 +632,14 @@ function renderModeBtn() {
 
 function renderModelBtn() {
   const m = state.models.find((x) => state.model && x.providerID === state.model.providerID && x.modelID === state.model.modelID);
-  $("modelBtn").innerHTML = `<span>${escapeHtml(m ? m.name : state.model ? state.model.modelID : "Default model")}</span>${icons.chevronDown}`;
+  const name = m ? m.name : state.model ? state.model.modelID : "Default model";
+  $("modelBtn").innerHTML = `<span>${escapeHtml(name)}</span>${icons.chevronDown}`;
+  reportStatus();
+}
+
+function reportStatus() {
+  const m = state.models.find((x) => state.model && x.providerID === state.model.providerID && x.modelID === state.model.modelID);
+  send({ type: "status", agent: state.agent, model: m ? m.name : state.model?.modelID });
 }
 
 function renderSelBtn() {
@@ -974,6 +1039,70 @@ function submit() {
 function cycleAgent() {
   state.agent = state.agents[(state.agents.indexOf(state.agent) + 1) % state.agents.length];
   renderModeBtn();
+  reportStatus();
+}
+
+/** Send a prompt that came from the editor (code action, context menu). */
+function sendExternal(text, mentions) {
+  send({
+    type: "send",
+    text,
+    mentions,
+    images: [],
+    includeSelection: false,
+    model: state.model || undefined,
+    agent: state.agent,
+    autoEdit: state.autoEdit,
+  });
+  state.history.push(text);
+  persist();
+  stickToBottom = true;
+  scrollToBottom(true);
+}
+
+/** Replace a user message's bubble with an editor; resending undoes to that message first. */
+function startEdit(id, bubble, text) {
+  if (!bubble || bubble.classList.contains("editing")) return;
+  bubble.classList.add("editing");
+  const area = h("textarea", { class: "edit-area", rows: Math.min(10, text.split("\n").length + 1) });
+  area.value = text;
+  const cancel = () => queueRender(id);
+  const resend = () => {
+    const value = area.value.trim();
+    if (!value) return;
+    if (state.busy && !confirm("OpenCode is still working. Stop it and resend?")) return;
+    send({
+      type: "editResend",
+      messageID: id,
+      text: value,
+      mentions: parseMentions(value),
+      images: [],
+      includeSelection: false,
+      model: state.model || undefined,
+      agent: state.agent,
+      autoEdit: state.autoEdit,
+    });
+    stickToBottom = true;
+  };
+  area.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      resend();
+    } else if (e.key === "Escape") cancel();
+  });
+  bubble.innerHTML = "";
+  bubble.append(
+    area,
+    h(
+      "div",
+      { class: "edit-actions" },
+      h("span", { class: "muted" }, "Resending undoes this message and everything after it."),
+      h("button", { class: "btn", onClick: cancel }, "Cancel"),
+      h("button", { class: "btn primary", onClick: resend }, "Resend"),
+    ),
+  );
+  area.focus();
+  area.setSelectionRange(area.value.length, area.value.length);
 }
 
 function setAutoEdit(on) {
@@ -1087,15 +1216,15 @@ messagesEl.addEventListener("click", (e) => {
     setTimeout(() => (copy.innerHTML = icons.copy), 1200);
     return;
   }
-  const a = e.target.closest("a");
+  const a = e.target.closest("a:not(.file-ref)");
   if (a && a.getAttribute("href") && !/^https?:/.test(a.getAttribute("href"))) {
     e.preventDefault();
     openPath(a.getAttribute("href"));
   }
-  const code = e.target.closest(".markdown code");
-  if (code && !code.closest("pre")) {
-    const m = code.textContent.match(/^([\w./-]+\.\w+)(?::(\d+))?$/);
-    if (m && m[1].includes("/")) openPath(m[1], m[2] ? +m[2] : undefined);
+  const ref = e.target.closest(".file-ref");
+  if (ref) {
+    e.preventDefault();
+    send({ type: "openFile", path: ref.dataset.path, line: ref.dataset.line ? +ref.dataset.line : undefined });
   }
 });
 
@@ -1125,13 +1254,16 @@ function toggleHistory(show) {
 $("historyBtn").addEventListener("click", () => toggleHistory());
 $("titleBtn").addEventListener("click", () => toggleHistory());
 $("newBtn").addEventListener("click", () => send({ type: "newSession" }));
+$("newBtn").title = "New conversation (opens a new tab if this one has messages)";
 $("moreBtn").addEventListener("click", () => {
   const pop = $("morePop");
   pop.classList.toggle("hidden");
   pop.innerHTML = "";
   const item = (label, fn) => pop.append(h("div", { class: "pop-item", onClick: () => (pop.classList.add("hidden"), fn()) }, label));
+  item("New conversation in a worktree…", () => send({ type: "newWorktree" }));
+  item(state.session?.share?.url ? "Copy share link" : "Share conversation…", () => send({ type: "share" }));
   item("Compact conversation", () => runBuiltin("compact"));
-  item("Settings", () => send({ type: "openSettings" }));
+  item("Providers and MCP servers…", () => send({ type: "openSettings" }));
   item("Show logs", () => send({ type: "showLogs" }));
 });
 
@@ -1194,6 +1326,8 @@ function upsertMessage(info) {
 
 function loadSession(session, messages) {
   state.session = session;
+  state.childParts.clear();
+  state.childRequested.clear();
   state.messages.clear();
   state.order = [];
   state.permissions = [];
@@ -1345,7 +1479,23 @@ window.addEventListener("message", (ev) => {
       if (!state.order.length) queueRender();
       break;
     case "session":
+      state.worktree = msg.worktree || null;
+      renderWorktreeBar();
       loadSession(msg.session, msg.messages);
+      break;
+    case "tabs":
+      renderTabs(msg.tabs, msg.active);
+      break;
+    case "childParts": {
+      if (!state.childParts.has(msg.sessionID)) state.childParts.set(msg.sessionID, new Map());
+      const map = state.childParts.get(msg.sessionID);
+      for (const part of msg.parts) map.set(part.id, part);
+      const owner = taskOwner(msg.sessionID);
+      if (owner) queueRender(owner);
+      break;
+    }
+    case "externalPrompt":
+      sendExternal(msg.text, msg.mentions);
       break;
     case "event":
       onEvent(msg.event);
@@ -1384,6 +1534,55 @@ window.addEventListener("message", (ev) => {
       break;
   }
 });
+
+/** Message that holds the task step which started a subagent session. */
+function taskOwner(childID) {
+  for (const [id, m] of state.messages) {
+    for (const p of m.parts.values()) if (p.type === "tool" && p.tool === "task" && p.state?.metadata?.sessionId === childID) return id;
+  }
+  return undefined;
+}
+
+function renderTabs(tabs, active) {
+  const bar = $("tabbar");
+  bar.classList.toggle("hidden", tabs.length < 2);
+  bar.innerHTML = "";
+  for (const t of tabs) {
+    const el = h(
+      "div",
+      { class: `tab ${t.key === active ? "active" : ""} status-${t.status}`, title: t.title, onClick: () => t.key !== active && send({ type: "switchTab", key: t.key }) },
+      t.status === "busy" ? h("span", { class: "tab-busy" }) : t.status === "attention" ? h("span", { class: "tab-attention", html: icons.shield }) : null,
+      t.worktree ? h("span", { class: "tab-wt", title: `Worktree ${t.worktree.name}`, html: icons.branch }) : null,
+      h("span", { class: "tab-title" }, t.title),
+      h("button", {
+        class: "tab-close",
+        title: "Close tab (the conversation stays in history)",
+        html: icons.x,
+        onClick: (e) => {
+          e.stopPropagation();
+          send({ type: "closeTab", key: t.key });
+        },
+      }),
+    );
+    bar.append(el);
+  }
+  bar.append(h("button", { class: "icon-btn tab-new", title: "New conversation tab", html: icons.plus, onClick: () => send({ type: "newSession" }) }));
+  bar.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function renderWorktreeBar() {
+  const bar = $("worktreeBar");
+  const wt = state.worktree;
+  bar.classList.toggle("hidden", !wt);
+  if (!wt) return;
+  bar.innerHTML = "";
+  bar.append(
+    h("span", { class: "tool-icon", html: icons.branch }),
+    h("span", { class: "wt-text" }, "Working in worktree ", h("b", {}, wt.name), wt.branch ? ` (${wt.branch})` : "", ". Your files are untouched."),
+    h("button", { class: "btn", onClick: () => send({ type: "applyWorktree" }) }, "Apply to workspace"),
+    h("button", { class: "btn danger", onClick: () => send({ type: "discardWorktree" }) }, "Remove"),
+  );
+}
 
 renderModeBtn();
 renderModelBtn();

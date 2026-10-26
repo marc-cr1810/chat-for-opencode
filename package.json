@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode for VS Code",
   "description": "Chat with OpenCode agents from VS Code's secondary side bar.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -60,11 +60,35 @@
       },
       {
         "command": "opencode.insertAtMention",
-        "title": "OpenCode: Add Selection to Prompt"
+        "title": "Add Selection to Prompt",
+        "category": "OpenCode"
       },
       {
         "command": "opencode.restartServer",
         "title": "OpenCode: Restart Server"
+      },
+      {
+        "command": "opencode.explainSelection",
+        "title": "Explain",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.refactorSelection",
+        "title": "Refactor",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.testSelection",
+        "title": "Write Tests",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.fixDiagnostic",
+        "title": "Fix with OpenCode"
+      },
+      {
+        "command": "opencode.openSettingsPanel",
+        "title": "OpenCode: Settings (Providers, MCP)"
       }
     ],
     "menus": {
@@ -72,6 +96,36 @@
         {
           "command": "opencode.openInTab",
           "group": "navigation@100"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "opencode.editorContext",
+          "group": "1_opencode@1"
+        }
+      ],
+      "opencode.editorContext": [
+        {
+          "command": "opencode.explainSelection",
+          "group": "1_ask@1"
+        },
+        {
+          "command": "opencode.refactorSelection",
+          "group": "1_ask@2"
+        },
+        {
+          "command": "opencode.testSelection",
+          "group": "1_ask@3"
+        },
+        {
+          "command": "opencode.insertAtMention",
+          "group": "2_prompt@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "opencode.fixDiagnostic",
+          "when": "false"
         }
       ]
     },
@@ -119,9 +173,20 @@
           ],
           "default": "sidebar",
           "description": "Where Ctrl+Alt+O opens OpenCode when no chat is open."
+        },
+        "opencode.notifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification when OpenCode finishes or needs approval while its panel is hidden."
         }
       }
-    }
+    },
+    "submenus": [
+      {
+        "id": "opencode.editorContext",
+        "label": "OpenCode"
+      }
+    ]
   },
   "scripts": {
     "build": "node build.mjs",

@@ -4,6 +4,8 @@ import { spawn, ChildProcess } from "child_process";
 export interface OpencodeEvent {
   type: string;
   properties: any;
+  /** Directory of the OpenCode instance that emitted it (worktrees have their own). */
+  directory?: string;
 }
 
 /**
@@ -79,14 +81,14 @@ export class OpencodeServer implements vscode.Disposable {
     });
   }
 
-  /** Long-lived SSE subscription; reconnects while the server is alive. */
+  /** Long-lived SSE subscription to every instance's events; reconnects while the server is alive. */
   private async subscribe() {
     this.eventAbort?.abort();
     const abort = new AbortController();
     this.eventAbort = abort;
     while (!abort.signal.aborted && this.baseUrl) {
       try {
-        const res = await fetch(this.url("/event"), {
+        const res = await fetch(this.url("/global/event"), {
           headers: { Accept: "text/event-stream" },
           signal: abort.signal,
         });
@@ -106,7 +108,9 @@ export class OpencodeServer implements vscode.Disposable {
               .join("\n");
             if (!data) continue;
             try {
-              this.emitter.fire(JSON.parse(data));
+              const parsed = JSON.parse(data);
+              const event = parsed.payload ? { ...parsed.payload, directory: parsed.directory } : parsed;
+              this.emitter.fire(event);
             } catch {
               // ignore malformed frames
             }

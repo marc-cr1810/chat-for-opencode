@@ -245,8 +245,52 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .change-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; font-size: 0.9em; }
 
 .user-bubble { position: relative; }
-.undo-btn { position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; visibility: hidden; background: var(--input-bg); }
-.msg.user:hover .undo-btn { visibility: visible; }
+.msg-actions { position: absolute; top: 2px; right: 2px; display: flex; gap: 2px; visibility: hidden; background: var(--input-bg); border-radius: 5px; }
+.msg-actions .icon-btn { width: 22px; height: 22px; }
+.msg.user:hover .msg-actions { visibility: visible; }
+.user-bubble.editing { width: 100%; }
+.edit-area {
+  width: 100%; resize: vertical; padding: 6px 8px; border-radius: 6px; font: inherit; line-height: 1.5; outline: none;
+  border: 1px solid var(--vscode-focusBorder); background: var(--vscode-editor-background); color: var(--fg);
+}
+.edit-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.edit-actions .muted { flex: 1; color: var(--muted); font-size: 0.88em; }
+
+.file-ref { color: var(--vscode-textLink-foreground); text-decoration: none; cursor: pointer; }
+.file-ref:hover { text-decoration: underline; }
+.markdown .file-ref code { color: var(--vscode-textLink-foreground); }
+
+.subagent-steps { border-left: 2px solid var(--border); padding: 2px 0 2px 10px; margin: 2px 0 6px; display: flex; flex-direction: column; gap: 1px; }
+.sub-step { display: flex; align-items: baseline; gap: 6px; font-size: 0.92em; min-width: 0; }
+.sub-step .tool-icon { align-self: center; }
+.sub-step .tool-name { font-weight: 500; }
+.subagent-result { margin-top: 4px; }
+
+.tabbar {
+  display: flex; align-items: stretch; gap: 1px; padding: 0 6px; border-bottom: 1px solid var(--border);
+  overflow-x: auto; flex-shrink: 0; scrollbar-width: thin;
+}
+.tab {
+  display: flex; align-items: center; gap: 5px; padding: 5px 4px 5px 8px; max-width: 170px; min-width: 70px; cursor: pointer;
+  color: var(--muted); border-bottom: 2px solid transparent; font-size: 0.9em; flex-shrink: 0;
+}
+.tab:hover { color: var(--fg); background: var(--hover); }
+.tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tab-close { display: inline-flex; padding: 2px; border-radius: 3px; visibility: hidden; color: var(--muted); }
+.tab:hover .tab-close, .tab.active .tab-close { visibility: visible; }
+.tab-close:hover { background: var(--hover); color: var(--fg); }
+.tab-busy { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1s ease-in-out infinite; flex-shrink: 0; }
+.tab-attention, .tab-wt { display: inline-flex; flex-shrink: 0; }
+.tab-attention { color: var(--vscode-editorWarning-foreground, #cca700); }
+.tab-new { align-self: center; flex-shrink: 0; }
+
+.worktree-bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 0.9em; flex-shrink: 0; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.worktree-bar .wt-text { flex: 1; min-width: 160px; }
+.worktree-bar .btn { padding: 2px 10px; }
 .revert-banner {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin: 6px 0 10px; border-radius: 6px; font-size: 0.92em;
   color: var(--muted); border: 1px dashed var(--border);

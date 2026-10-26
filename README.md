@@ -21,6 +21,17 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Undo to here** on any of your messages: rolls the conversation back and restores the files OpenCode changed (with Redo)
 - **Changes panel** listing every file the session changed, with +/- counts, native diff view and per-file discard
 - **Context meter** showing how full the model's context is and what the session has cost; click to compact
+- **Conversation tabs**: run several conversations in parallel; tabs show when one is working or needs approval
+- **Edit and resend** any earlier message (undoes from that point, then sends the edited text)
+- **Subagent view**: steps run by `explore` / `general` subagents stream in, nested under the task
+- **Worktrees**: start a conversation in an isolated git worktree, then apply its changes to your workspace or throw them away
+- **Share links** for a conversation (asks first, since the link is public)
+- **Clickable file references** like `src/app.ts:42` in replies
+- **Fix / Explain with OpenCode** in the lightbulb menu for errors and warnings
+- **Right-click menu** in the editor: Explain, Refactor, Write Tests, Add Selection to Prompt
+- **Status bar item** showing the agent and model, a spinner while working, and a warning when approval is needed
+- **Notifications** when a task finishes or needs approval while the panel is hidden (`opencode.notifications`)
+- **Settings screen** (`…` → Providers and MCP servers) to add API keys, connect or add MCP servers, and open config files
 - Questions asked by the agent rendered as option cards
 
 ## Keybindings
@@ -38,6 +49,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - `opencode.binaryPath` – path to `opencode` (default: `opencode` on PATH)
 - `opencode.autoApproveEdits` – apply edits without asking (shell commands always ask)
 - `opencode.model` – default `provider/model`
+- `opencode.notifications` – notify when a task finishes or needs approval while hidden (default on)
 - `opencode.preferredLocation` – `sidebar` (default, the secondary side bar) | `panel` (editor tab)
 
 ## Build
@@ -45,7 +57,7 @@ whatever providers, models, agents and commands you've configured for the openco
 ```bash
 npm install
 npm run package   # produces opencode-vscode-<version>.vsix
-code --install-extension opencode-vscode-0.2.0.vsix
+code --install-extension opencode-vscode-0.3.0.vsix
 ```
 
 For development, open this folder in VS Code and press F5.
