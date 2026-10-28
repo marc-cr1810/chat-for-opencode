@@ -17,7 +17,7 @@ whatever providers, models, agents and commands you've configured for the openco
 
 - Chat in an editor tab (button in the editor title bar) or in the secondary side bar (right-hand side, next to other chat extensions)
 - Streaming responses, collapsible reasoning, tool calls with per-tool icons (Read / Edit / Shell …)
-- Inline diffs for edits, plus "Open diff" in VS Code's native diff editor
+- Inline diffs for edits, including multi-file `apply_patch` edits split per file, plus "Open diff" in VS Code's native diff editor
 - Permission prompts: **Allow once / Allow always / Reject** with an optional reason (Enter / Esc)
 - Agent switcher (build, plan and your custom agents) cycled with **Tab**, plus an approve / auto-approve edits toggle
 - Current file / selection shared automatically (eye toggle in the footer)
@@ -36,7 +36,9 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Worktrees**: start a conversation in an isolated git worktree, then apply its changes to your workspace or throw them away
 - **Share links** for a conversation (asks first, since the link is public)
 - **Clickable file references** like `src/app.ts:42` in replies
-- **Rich replies**: LaTeX math (KaTeX), syntax-highlighted code, Mermaid diagrams (loaded only when a reply has one), GitHub alerts, task lists, footnotes and safe inline HTML such as `<details>` and `<kbd>`. Written files and edit diffs are highlighted too
+- **Rich replies**: LaTeX math (KaTeX), syntax-highlighted code, Mermaid diagrams (loaded only when a reply has one), GitHub alerts, task lists, footnotes and safe inline HTML such as `<details>` and `<kbd>`. Written files and edit diffs are highlighted too. Workspace images in replies load in place, images and PDFs a tool read show under its step, files the model returns can be opened or saved, and links like `src/app.ts#L10-L20` open at that line
+- Each turn ends with its model, time, tokens and cost on hover, plus a button to copy the reply
+- **Readable tool steps**: grep, glob and code-intelligence (`lsp`) results as lists that open the file at the line; MCP tools by server and name with their arguments; fetched pages previewed as markdown and search results as links; the plan agent's hand-over to build; and tool calls the model got wrong, as warnings
 - **Fix / Explain with OpenCode** in the lightbulb menu for errors and warnings
 - **Right-click menu** in the editor: Explain, Refactor, Write Tests, Add Selection to Prompt
 - **Status bar item** showing the agent and model, a spinner while working, and a warning when approval is needed

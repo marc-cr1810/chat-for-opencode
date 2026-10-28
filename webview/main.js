@@ -4,6 +4,7 @@ import katex from "katex";
 import hljs from "highlight.js/lib/common";
 import markedFootnote from "marked-footnote";
 import { icons } from "./icons.js";
+import { domain, lspHover, lspLocations, lspName, mainArg, mcpTool, parseGlob, parseGrep, parseSearch } from "./toolOutput.js";
 
 const vscode = acquireVsCodeApi();
 
@@ -136,14 +137,23 @@ const marked = new Marked({
     },
     link(href, title, text) {
       const inner = text.replace(/<a class="file-ref"[^>]*>([\s\S]*?)<\/a>/g, "$1");
-      return `<a href="${escapeHtml(href)}" title="${escapeHtml(title || "")}">${inner}</a>`;
+      if (mdBase) return `<a href="${escapeHtml(resolveUrl(href))}" title="${escapeHtml(title || "")}">${inner}</a>`;
+      // A link to a file says which lines it opens at.
+      const file = /^(?:[a-z][\w+.-]*:|#)/i.test(href) ? null : fileTarget(href);
+      const tip = title || (file ? `Open ${file.path}${file.line ? `:${file.line}${file.end ? `-${file.end}` : ""}` : ""}` : "");
+      return `<a href="${escapeHtml(href)}" title="${escapeHtml(tip)}">${inner}</a>`;
+    },
+    image(href, title, text) {
+      // A fetched page's images are on the web, wherever its links point.
+      if (mdBase) return /^https?:/.test(resolveUrl(href)) ? `<img src="${escapeHtml(resolveUrl(href))}" alt="${text}">` : text;
+      return isWebUrl(href) ? false : localImage(localPath(href), text, title);
     },
     codespan(code) {
-      const m = code.match(FILE_REF_EXACT);
+      const m = !mdBase && code.match(FILE_REF_EXACT);
       return m ? fileRef(m[1], m[2], m[3], `<code>${code}</code>`) : `<code>${code}</code>`;
     },
     text(text) {
-      return typeof text === "string" ? linkFileRefs(text) : false;
+      return typeof text === "string" && !mdBase ? linkFileRefs(text) : false;
     },
   },
 });
@@ -158,8 +168,53 @@ function fileRef(path, line, end, inner) {
 function linkFileRefs(text) {
   return text.replace(FILE_REF_IN_TEXT, (all, path, line, end) => fileRef(path, line, end, all));
 }
+// A link to a file, optionally at a line or range: path, path:12, path:12-20, path#L12 or path#L12-L20.
+function fileTarget(href) {
+  const m = String(href).match(/^(.*?)(?:#L?(\d+)(?:-L?(\d+))?|:(\d+)(?:-(\d+))?)?$/);
+  let path = m[1];
+  try {
+    path = decodeURI(path);
+  } catch {}
+  const line = m[2] ?? m[4];
+  const end = m[3] ?? m[5];
+  return { path, line: line ? +line : undefined, end: end ? +end : undefined };
+}
+
+// Images: web and data URLs load as they are. Workspace files can't be read by the webview, so the
+// extension reads them and sends them back (see loadLocalImages); until then the image is empty, and
+// one that can't be read says so in its place.
+const localImages = new Map(); // path → data URL, or null when it couldn't be read
+const requestedImages = new Set();
+const isWebUrl = (href) => /^(?:https?|data):/i.test(href);
+const localPath = (href) => (/^file:/i.test(href) ? fileUrlToPath(href) : fileTarget(href).path);
+const missingImage = (path) => `<span class="img-missing">${icons.imageOff}<code>${escapeHtml(path)}</code> not found</span>`;
+function localImage(path, alt, title) {
+  const url = localImages.get(path);
+  if (url === null) return missingImage(path);
+  return `<span class="md-img" data-path="${escapeHtml(path)}" title="${escapeHtml(title || `Open ${path}`)}"><img alt="${alt}" data-local="${escapeHtml(path)}"${url ? ` src="${url}"` : ""}><span class="img-path">${escapeHtml(path)}</span></span>`;
+}
+
 marked.use(markedFootnote({ description: "Footnotes" }));
 const md = (text) => marked.parse(text || "");
+
+// A web page as markdown (from Fetch): its relative links and images resolve against the page,
+// and nothing in it is taken for a workspace file.
+let mdBase = null;
+function resolveUrl(href) {
+  try {
+    return new URL(href, mdBase).href;
+  } catch {
+    return href;
+  }
+}
+function pageMd(text, url) {
+  mdBase = url;
+  try {
+    return md(text);
+  } finally {
+    mdBase = null;
+  }
+}
 
 // --------------------------------------------------------------------- state
 
@@ -211,6 +266,8 @@ const state = {
   model: null,
   /** Agents an @mention hands work to: [{ name, description }]. */
   subagents: [],
+  /** MCP server names, to read their tools' IDs back (see mcpTool). */
+  mcpServers: [],
   /** The picked model's reasoning variant, or null for the model's default. */
   variant: null,
   /** The effort last picked by hand, carried to models that have no level remembered. */
@@ -365,6 +422,24 @@ new MutationObserver(() => {
   }
   renderDiagrams();
 }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+// Workspace images (see localImage) are asked for once each; the answer fills every copy in the page.
+function loadLocalImages() {
+  for (const img of messagesEl.querySelectorAll("img[data-local]:not([src])")) {
+    const path = img.dataset.local;
+    if (localImages.has(path)) showLocalImage(img, localImages.get(path));
+    else if (!requestedImages.has(path)) {
+      requestedImages.add(path);
+      send({ type: "loadImage", path });
+    }
+  }
+}
+function showLocalImage(img, url) {
+  if (url) img.src = url;
+  else (img.closest(".md-img") ?? img).outerHTML = missingImage(img.dataset.local);
+}
+new MutationObserver(() => messagesEl.querySelector("img[data-local]:not([src])") && loadLocalImages()).observe(messagesEl, { childList: true, subtree: true });
+
 const input = $("input");
 const menuEl = $("menu");
 
@@ -508,8 +583,17 @@ function renderMessage(id) {
     const text = parts.filter((p) => p.type === "text" && !p.synthetic && !p.ignored).map((p) => p.text).join("\n");
     const files = parts.filter((p) => p.type === "file");
     const compaction = parts.find((p) => p.type === "compaction");
-    const command = compaction ? { name: "compact", arguments: compaction.auto ? "(automatic, context was full)" : "" } : state.commandMeta.get(id);
-    if (command) return renderCommandMessage(id, command, compaction ? "" : text);
+    // A command whose agent is a subagent: OpenCode hands its prompt to that agent as a subtask.
+    const subtask = parts.find((p) => p.type === "subtask");
+    const meta = state.commandMeta.get(id);
+    const command = compaction
+      ? { name: "compact", arguments: compaction.auto ? "(automatic, context was full)" : "" }
+      : subtask
+        ? { name: subtask.command || meta?.name || "task", arguments: meta?.arguments ?? (subtask.command ? "" : subtask.description), agent: subtask.agent }
+        : meta;
+    if (command) return renderCommandMessage(id, command, compaction ? "" : subtask ? subtask.prompt : text);
+    // Only hidden context (like the note plan_exit adds when it hands over to build): nothing to show.
+    if (!text.trim() && !files.length) return h("div", { class: "msg user hidden", "data-mid": id });
     return h(
       "div",
       { class: "msg user", "data-mid": id },
@@ -588,7 +672,51 @@ function renderMessage(id) {
   } else if (msg.info.error?.name === "MessageAbortedError") {
     el.append(h("div", { class: "interrupted" }, "Stopped"));
   }
+  const foot = turnFooter(msg);
+  if (foot) el.append(foot);
   return el;
+}
+
+/**
+ * Model, time, tokens and cost for a whole turn, under its last reply. OpenCode writes one reply per
+ * step (each round of tool calls), so the numbers add up every reply to the same prompt.
+ */
+function turnFooter(msg) {
+  const info = msg.info;
+  // Steps that end in tool calls are followed by another; only the turn's last step gets the footer.
+  if (!info.time?.completed || !info.finish || info.finish === "tool-calls" || info.finish === "unknown") return null;
+  const steps = info.parentID ? state.order.map((id) => state.messages.get(id)?.info).filter((m) => m?.role === "assistant" && m.parentID === info.parentID) : [info];
+  const start = state.messages.get(info.parentID)?.info.time?.created ?? steps[0]?.time?.created ?? info.time.created;
+  let input = 0;
+  let cached = 0;
+  let output = 0;
+  let cost = 0;
+  for (const s of steps) {
+    const t = s.tokens || {};
+    input += (t.input || 0) + (t.cache?.read || 0) + (t.cache?.write || 0);
+    cached += t.cache?.read || 0;
+    output += (t.output || 0) + (t.reasoning || 0);
+    cost += s.cost || 0;
+  }
+  const model = state.models.find((m) => m.providerID === info.providerID && m.modelID === info.modelID)?.name || info.modelID || "";
+  const secs = Math.max(1, Math.round((info.time.completed - start) / 1000));
+  const dot = () => h("span", { class: "sep" }, "·");
+  const tip =
+    `${model ? `${model}, ` : ""}${plural(steps.length, "step")} in ${formatWait(secs)}\n` +
+    `Tokens sent to the model: ${fmtTokens(input)}${cached ? ` (${fmtTokens(cached)} from cache)` : ""}\n` +
+    `Tokens it wrote: ${fmtTokens(output)}` +
+    (cost > 0 ? `\nCost: $${cost.toFixed(4)}` : "");
+  return h(
+    "div",
+    { class: "msg-foot", title: tip },
+    model ? h("span", { class: "model" }, model) : null,
+    model ? dot() : null,
+    h("span", { class: "stat" }, formatWait(secs)),
+    dot(),
+    h("span", { class: "stat" }, `${fmtTokens(input)} in, ${fmtTokens(output)} out`),
+    cost > 0 ? [dot(), h("span", { class: "stat" }, cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}`)] : null,
+    h("button", { class: "icon-btn copy-reply", title: "Copy reply", "data-turn": info.parentID, html: icons.copy }),
+  );
 }
 
 /** A /command as the user typed it, with the expanded prompt available on demand. */
@@ -598,6 +726,7 @@ function renderCommandMessage(id, command, prompt) {
     { class: "cmd-line" },
     h("span", { class: "cmd-name" }, `/${command.name}`),
     command.arguments ? h("span", { class: "cmd-args" }, command.arguments) : null,
+    command.agent ? h("span", { class: "cmd-to" }, "→ ", h("span", { class: "agent-tag", style: `--tag: ${agentColor(command.agent)}` }, `@${command.agent}`)) : null,
   );
   return h(
     "div",
@@ -638,9 +767,78 @@ function renderPart(p) {
       return h("div", { class: "row note-row" }, "Conversation compacted");
     case "agent":
       return h("div", { class: "row note-row" }, `@${p.name}`);
+    case "file":
+      // A file the model returned: images in full, anything else as a card to open or save.
+      return h("div", { class: "row file-row", "data-pid": p.id }, p.mime?.startsWith("image/") ? imageCard(p, p.id) : fileCard(p, p.id));
     default:
       return null;
   }
+}
+
+// ------------------------------------------------------------- files and images
+
+// File parts and tool attachments by key, for the Open and Save buttons (data URLs are too big to
+// keep in the page twice).
+const fileParts = new Map();
+
+const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
+const MIME_NAMES = { "application/pdf": "PDF", "text/markdown": "Markdown", "text/plain": "Text", "text/csv": "CSV", "text/html": "HTML", "application/json": "JSON", "application/zip": "ZIP" };
+function fileKind(f) {
+  if (MIME_NAMES[f.mime]) return MIME_NAMES[f.mime];
+  if (f.mime?.startsWith("image/")) return f.mime.slice(6).replace(/\+xml$/, "").toUpperCase();
+  const ext = fileName(f).split(".").pop();
+  return ext && ext !== fileName(f) ? ext.toUpperCase() : "File";
+}
+const fileName = (f) => f.filename || (f.url?.startsWith("file:") ? fileUrlToPath(f.url).split("/").pop() : "") || "file";
+/** "PNG · 184 KB": the size is known for data URLs only. */
+function fileMeta(f) {
+  const m = /^data:[^,]*?(;base64)?,/.exec(f.url || "");
+  const body = m ? f.url.length - m[0].length : 0;
+  const bytes = m ? (m[1] ? Math.floor((body * 3) / 4) - (f.url.endsWith("==") ? 2 : f.url.endsWith("=") ? 1 : 0) : body) : null;
+  return [fileKind(f), bytes !== null ? fmtBytes(bytes) : ""].filter(Boolean).join(" · ");
+}
+
+/** An image from a part's URL: data and web URLs as they are, file URLs read through the extension. */
+function partImage(f, cls) {
+  if (!f.url?.startsWith("file:")) return h("img", { class: cls, alt: fileName(f), src: f.url });
+  const path = fileUrlToPath(f.url);
+  return h("img", { class: cls, alt: fileName(f), "data-local": path, src: localImages.get(path) || undefined });
+}
+
+function fileCard(f, key) {
+  fileParts.set(key, f);
+  const name = fileName(f);
+  return h(
+    "div",
+    { class: "file-card", "data-file": key },
+    h("span", { class: "fc-icon", html: f.mime?.startsWith("image/") ? icons.image : icons.fileText }),
+    h("div", { class: "fc-text" }, h("div", { class: "fc-name", title: name }, name), h("div", { class: "fc-meta" }, fileMeta(f))),
+    h(
+      "div",
+      { class: "fc-btns" },
+      h("button", { class: "icon-btn", title: "Open", "data-file-action": "open", html: icons.externalLink }),
+      h("button", { class: "icon-btn", title: "Save as…", "data-file-action": "save", html: icons.download }),
+    ),
+  );
+}
+
+function imageCard(f, key) {
+  return h("div", { class: "image-card", "data-file": key }, partImage(f, "card-img"), fileCard(f, key));
+}
+
+/** Files a tool returned (a Read of an image or PDF): images shown, anything else as a card. */
+function renderToolFiles(p, name) {
+  return h(
+    "div",
+    { class: "tool-attachments" },
+    p.state.attachments.map((a, i) => {
+      const f = { ...a, filename: a.filename || name };
+      const key = `${p.id}:${i}`;
+      if (!f.mime?.startsWith("image/")) return fileCard(f, key);
+      fileParts.set(key, f);
+      return h("div", { "data-file": key }, partImage(f, "attach-img"));
+    }),
+  );
 }
 
 /** Expand/collapse, remembering the user's choice so streaming updates don't undo it. */
@@ -675,15 +873,19 @@ function toolSummary(p) {
   const file = i.filePath || i.file_path || i.path;
   switch (t) {
     case "read":
-      return { name: "Read", arg: short(file), file, icon: icons.file };
+      return { name: "Read", arg: short(file), file, icon: p.state?.attachments?.some((a) => a.mime?.startsWith("image/")) ? icons.image : icons.file };
     case "edit":
     case "multiedit":
       return { name: "Edit", arg: short(file), file, icon: icons.pencil };
     case "write":
       return { name: "Write", arg: short(file), file, icon: icons.pencil };
     case "patch":
-    case "apply_patch":
-      return { name: "Patch", arg: p.state?.title || "", icon: icons.pencil };
+    case "apply_patch": {
+      // One file reads like an Edit; several are counted.
+      const files = p.state?.metadata?.files || [];
+      if (files.length === 1) return { name: "Patch", arg: short(files[0].movePath || files[0].filePath), file: files[0].movePath || files[0].filePath, icon: icons.pencil };
+      return { name: "Patch", arg: files.length ? plural(files.length, "file") : p.state?.title || "", icon: icons.pencil };
+    }
     case "bash":
       return { name: "Shell", arg: i.command || "", icon: icons.terminal };
     case "glob":
@@ -693,7 +895,7 @@ function toolSummary(p) {
     case "list":
       return { name: "List", arg: short(i.path) || ".", icon: icons.folder };
     case "webfetch":
-      return { name: "Fetch", arg: i.url || "", icon: icons.globe };
+      return { name: "Fetch", arg: String(i.url || "").replace(/^https?:\/\//, ""), icon: icons.globe };
     case "websearch":
     case "codesearch":
       return { name: "Web search", arg: i.query || "", icon: icons.globe };
@@ -707,19 +909,35 @@ function toolSummary(p) {
       return { name: "Skill", arg: i.name || "", icon: icons.sparkle };
     case "question":
       return { name: "Question", arg: "", icon: icons.help };
-    default:
+    case "lsp": {
+      const where = i.operation === "workspaceSymbol" ? i.query || "" : i.operation === "documentSymbol" ? short(file) : `${short(file)}:${i.line}:${i.character}`;
+      return { name: lspName(i.operation), arg: where, file: i.operation === "workspaceSymbol" ? undefined : file, icon: icons.braces };
+    }
+    case "invalid": {
+      // A call the model got wrong: named for the tool it meant (OpenCode keeps only its name and the
+      // error, not what it was given), struck through if there's no such tool.
+      const meant = i.tool && i.tool !== "invalid" ? toolSummary({ ...p, tool: i.tool, state: { input: {} } }) : { name: "Tool call" };
+      return { name: meant.name, server: meant.server, arg: "", missing: noSuchTool(i.error), icon: icons.triangle };
+    }
+    default: {
+      const mcp = mcpTool(t, state.mcpServers);
+      if (mcp) return { name: mcp.name, server: mcp.server, arg: mainArg(i) || p.state?.title || "", icon: icons.plug };
       return { name: t, arg: p.state?.title || "", icon: icons.wrench };
+    }
   }
 }
 
+const noSuchTool = (error) => /unavailable tool|no such tool/i.test(String(error || ""));
+
 function renderTool(p) {
   const st = p.state || {};
-  const { name, arg, file, icon } = toolSummary(p);
+  const { name, server, missing, arg, file, icon } = toolSummary(p);
   const status = st.status || "pending";
+  if (p.tool === "plan_exit" && (status === "completed" || (status === "error" && /dismissed/i.test(st.error || "")))) return renderHandoff(p);
   const head = h(
     "span",
     { class: "tool-head" },
-    h("span", { class: "tool-name" }, name),
+    h("span", { class: "tool-name" }, server ? h("span", { class: "tool-server" }, `${server} · `) : null, missing ? h("s", {}, name) : name),
     arg
       ? h(
           "span",
@@ -738,11 +956,23 @@ function renderTool(p) {
       : null,
   );
   const meta = st.metadata || {};
+  const input = st.input || {};
   let summary = null;
   let body = null;
   let open = false;
+  let cls = "";
+  const done = status === "completed";
+  const grep = done && p.tool === "grep" ? parseGrep(st.output) : null;
+  const glob = done && p.tool === "glob" ? parseGlob(st.output) : null;
+  const search = done && (p.tool === "websearch" || p.tool === "codesearch") ? parseSearch(st.output) : null;
+  const mcp = server && p.tool !== "invalid";
 
-  if (status === "error") {
+  if (p.tool === "invalid") {
+    cls = "warn";
+    const error = String(input.error || st.output || "");
+    summary = h("span", { class: "tool-summary warn" }, missing ? "No such tool; the model was told and can try again" : `Invalid arguments: ${firstLine(error.replace(/^Invalid input for tool [^:]*:\s*/i, ""))}`);
+    body = h("pre", { class: "tool-output" }, error);
+  } else if (status === "error") {
     summary = h("span", { class: "tool-summary err" }, firstLine(st.error));
     body = h("pre", { class: "tool-output err" }, st.error || "");
   } else if (p.tool === "edit" || p.tool === "write" || p.tool === "multiedit") {
@@ -757,9 +987,62 @@ function renderTool(p) {
       summary = h("span", { class: "tool-summary" }, `${lines} lines`);
       body = h("pre", { class: "tool-output", html: highlightLines(st.input.content, langForPath(st.input.filePath)).join("\n") });
     }
+  } else if ((p.tool === "apply_patch" || p.tool === "patch") && meta.files?.length) {
+    const add = meta.files.reduce((n, f) => n + (f.additions || 0), 0);
+    const del = meta.files.reduce((n, f) => n + (f.deletions || 0), 0);
+    summary = h("span", { class: "tool-summary" }, h("span", { class: "add" }, `+${add}`), " ", h("span", { class: "del" }, `-${del}`));
+    body = h("div", { class: "patch-files" }, meta.files.map((f, i) => patchFile(p, f, i)));
+    open = true;
+  } else if (p.tool === "read" && status === "completed" && st.attachments?.length) {
+    const name = String(file || "").split(/[\\/]/).pop();
+    summary = h("span", { class: "tool-summary" }, fileMeta({ ...st.attachments[0], filename: name }));
+    body = renderToolFiles(p, name);
+    open = st.attachments.some((a) => a.mime?.startsWith("image/"));
   } else if (p.tool === "read" && status === "completed") {
     const lines = (st.output || "").split("\n").filter((l) => /^\d+[|:\t]/.test(l.trim())).length;
     summary = h("span", { class: "tool-summary" }, lines ? `Read ${lines} lines` : "Read file");
+  } else if (grep) {
+    const matches = grep.files.reduce((n, f) => n + f.lines.length, 0);
+    summary = h("span", { class: "tool-summary" }, `${matches} match${matches === 1 ? "" : "es"} in ${plural(grep.files.length, "file")}${grep.truncated ? ", more not shown" : ""}`);
+    const pattern = searchPattern(input.pattern);
+    body = foldRows(
+      p,
+      grep.files.flatMap((f) => [
+        resultFile(f.path, f.lines.length),
+        ...f.lines.map((l) => h("div", { class: "res-line", "data-open-path": f.path, "data-open-line": l.line, title: `${short(f.path)}:${l.line}` }, h("span", { class: "ln" }, l.line), h("span", { class: "txt", html: markMatches(l.text.trim(), pattern) }))),
+      ]),
+    );
+  } else if (glob) {
+    summary = h("span", { class: "tool-summary" }, `${plural(glob.paths.length, "file")}${glob.truncated ? ", more not shown" : ""}`);
+    body = foldRows(p, glob.paths.map((path) => resultFile(path)));
+  } else if (done && p.tool === "lsp" && Array.isArray(meta.result)) {
+    ({ summary, body } = lspBody(p, input.operation, meta.result));
+  } else if (done && p.tool === "webfetch" && st.output && (input.format || "markdown") === "markdown" && !st.attachments?.length) {
+    summary = h("span", { class: "tool-summary" }, `Markdown · ${fmtBytes(new Blob([st.output]).size)}`);
+    const all = expanded.has(p.id);
+    body = h(
+      "div",
+      { class: "page-preview" },
+      h("div", { class: `markdown${all ? "" : " report-preview"}`, html: pageHtml(p) }),
+      h(
+        "div",
+        { class: "report-links" },
+        h("button", { class: "link-btn", "data-expand": p.id, "data-msg": p.messageID }, all ? "Show less" : "Show page"),
+        h("button", { class: "link-btn", "data-open-url": input.url }, "Open in browser"),
+      ),
+    );
+  } else if (search) {
+    summary = h("span", { class: "tool-summary" }, plural(search.length, "result"));
+    body = foldRows(
+      p,
+      search.map((r) => h("div", { class: "result" }, h("a", { href: r.url, title: r.url }, r.title), h("span", { class: "domain" }, domain(r.url)), r.snippet ? h("div", { class: "snippet" }, r.snippet) : null)),
+      { limit: 5, cls: "result-list" },
+    );
+  } else if (mcp && status !== "pending") {
+    // What the tool was given, then what it gave back (JSON laid out).
+    const out = st.output ? prettyJson(String(st.output)) : "";
+    if (out && !out.startsWith("{") && !out.startsWith("[")) summary = h("span", { class: "tool-summary" }, firstLine(out));
+    body = h("div", {}, argList(input), out ? h("pre", { class: "tool-output" }, out.length > 20000 ? out.slice(0, 20000) + "\n… (truncated)" : out) : null);
   } else if (p.tool === "todowrite") {
     const todos = st.input?.todos || meta.todos || [];
     body = renderTodoList(todos);
@@ -780,18 +1063,20 @@ function renderTool(p) {
     body = h("pre", { class: "tool-output", html: ansiHtml(meta.output) });
     open = true;
   }
+  // Other tools (MCP servers, say) can return files too.
+  if (st.attachments?.length && p.tool !== "read") body = h("div", {}, body, renderToolFiles(p, ""));
 
   if (state.settings.toolOutput !== "auto") open = state.settings.toolOutput === "expanded";
   const dot = h("span", { class: `tool-icon status-${status}`, title: status, html: icon });
   if (!body) {
     return h(
       "div",
-      { class: "row tool-row", "data-pid": p.id },
+      { class: `row tool-row ${cls}`, "data-pid": p.id },
       dot,
       h("div", { class: "tool-main" }, head, summary ? h("div", { class: "tool-sub" }, summary) : null),
     );
   }
-  const el = h("div", { class: `row tool-row collapsible ${open ? "open" : ""}`, "data-pid": p.id }, dot);
+  const el = h("div", { class: `row tool-row collapsible ${cls} ${open ? "open" : ""}`, "data-pid": p.id }, dot);
   const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
   header.addEventListener("click", () => toggleOpen(el));
   el.append(h("div", { class: "tool-main" }, header, summary ? h("div", { class: "tool-sub" }, summary) : null, h("div", { class: "coll-body" }, body)));
@@ -799,6 +1084,175 @@ function renderTool(p) {
 }
 
 const firstLine = (s) => String(s || "").trim().split("\n")[0].slice(0, 200);
+
+// ------------------------------------------------------------ tool results
+
+// Result lists (and fetched pages) the user opened in full, by part ID.
+const expanded = new Set();
+const RESULT_ROWS = 20;
+
+/** Rows of a result list, folded after the first few with a row that shows the rest. */
+function foldRows(p, rows, { limit = RESULT_ROWS, cls = "results" } = {}) {
+  const shown = expanded.has(p.id) ? rows : rows.slice(0, limit);
+  const hidden = rows.length - shown.length;
+  return h("div", { class: cls }, shown, hidden ? h("div", { class: "res-more", "data-expand": p.id, "data-msg": p.messageID }, `${hidden} more`) : null);
+}
+
+/** A file in a result list, named like a row of the Changes panel; opens the file. */
+function resultFile(path, count) {
+  const rel = short(path);
+  const slash = rel.lastIndexOf("/");
+  return h(
+    "div",
+    { class: "res-file", "data-open-path": path, title: rel },
+    h("span", { class: "change-name" }, rel.slice(slash + 1)),
+    h("span", { class: "change-dir" }, slash > 0 ? rel.slice(0, slash) : ""),
+    count ? h("span", { class: "count" }, count) : null,
+  );
+}
+
+/** Grep's pattern as a JS regex, to highlight matches; null when ripgrep's syntax doesn't carry over. */
+function searchPattern(pattern) {
+  try {
+    return pattern ? new RegExp(pattern, "g") : null;
+  } catch {
+    return null;
+  }
+}
+function markMatches(text, re) {
+  if (!re) return escapeHtml(text);
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (!m[0]) break;
+    out += escapeHtml(text.slice(last, m.index)) + `<mark>${escapeHtml(m[0])}</mark>`;
+    last = m.index + m[0].length;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+const LSP_WORDS = { findReferences: "reference", documentSymbol: "symbol", workspaceSymbol: "symbol", incomingCalls: "caller", outgoingCalls: "call", goToImplementation: "implementation" };
+
+/** An lsp step: hover as markdown; everything else as places to open, each with its line of code. */
+function lspBody(p, operation, result) {
+  if (operation === "hover") {
+    const text = lspHover(result);
+    return { summary: text ? null : h("span", { class: "tool-summary" }, "Nothing to show"), body: text ? h("div", { class: "markdown", html: md(text) }) : null };
+  }
+  const places = lspLocations(result, p.state.input?.filePath);
+  if (!places.length) return { summary: h("span", { class: "tool-summary" }, "No results"), body: null };
+  const files = new Set(places.map((l) => l.path)).size;
+  const word = LSP_WORDS[operation] || "location";
+  const summary = h("span", { class: "tool-summary" }, `${plural(places.length, word)}${files > 1 ? ` in ${plural(files, "file")}` : ""}`);
+  const rows = places.map((l) =>
+    h(
+      "div",
+      { class: "res-hit", "data-open-path": l.path, "data-open-line": l.line },
+      h("span", { class: "where" }, l.name ? h("span", { class: "sym" }, l.name) : null, h("span", { class: "loc" }, `${short(l.path)}:${l.line}`)),
+      h("span", { class: "code", "data-src": `${l.path}:${l.line}` }, sourceLine(l.path, l.line)),
+    ),
+  );
+  return { summary, body: foldRows(p, rows) };
+}
+
+// Lines of code lsp results point at, read by the extension: "path:line" → text. Asked for once per
+// file, batched, and filled into the page as they arrive.
+const sourceLines = new Map();
+const wantedLines = new Map();
+function sourceLine(path, line) {
+  const key = `${path}:${line}`;
+  if (sourceLines.has(key)) return sourceLines.get(key);
+  if (!wantedLines.size) queueMicrotask(requestLines);
+  if (!wantedLines.has(path)) wantedLines.set(path, new Set());
+  wantedLines.get(path).add(line);
+  sourceLines.set(key, "");
+  return "";
+}
+function requestLines() {
+  for (const [path, lines] of wantedLines) send({ type: "loadLines", path, lines: [...lines] });
+  wantedLines.clear();
+}
+
+/** A fetched page rendered once it's complete; pages can be large and the step re-renders often. */
+const pageCache = new Map();
+function pageHtml(p) {
+  let html = pageCache.get(p.id);
+  if (!html) pageCache.set(p.id, (html = pageMd(p.state.output, p.state.input?.url)));
+  return html;
+}
+
+const prettyJson = (text) => {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+};
+
+/** An MCP call's arguments as a short list: long values are cut, with the whole on hover. */
+function argList(input) {
+  const entries = Object.entries(input || {});
+  if (!entries.length) return null;
+  return h(
+    "dl",
+    { class: "args" },
+    entries.flatMap(([k, v]) => {
+      const text = typeof v === "string" ? v : JSON.stringify(v);
+      return [h("dt", {}, k), h("dd", { title: text.slice(0, 1000) }, text.split("\n")[0])];
+    }),
+  );
+}
+
+/** plan_exit, once answered: the plan agent handing over to build, or staying put. */
+function renderHandoff(p) {
+  const tag = (agent) => h("span", { class: "agent-tag", style: `--tag: ${agentColor(agent)}` }, `@${agent}`);
+  if (p.state.status !== "completed") {
+    return h("div", { class: "row", "data-pid": p.id }, h("div", { class: "handoff kept" }, h("span", { class: "tool-icon", html: icons.pencil }), h("span", { class: "muted" }, "Kept planning: you chose to refine the plan first")));
+  }
+  // OpenCode names the plan file only in the message it adds for build.
+  let plan = null;
+  for (const m of state.messages.values()) {
+    for (const part of m.parts.values()) plan ??= part.type === "text" && part.synthetic ? part.text?.match(/^The plan at (.+?) has been approved/)?.[1] : null;
+  }
+  return h(
+    "div",
+    { class: "row", "data-pid": p.id },
+    h(
+      "div",
+      { class: "handoff" },
+      h("span", { class: "tool-icon", html: icons.circleCheck }),
+      h("span", {}, "Plan approved"),
+      tag("plan"),
+      h("span", { class: "muted", html: icons.arrowRight }),
+      tag("build"),
+      plan ? h("a", { class: "file-ref plan-file", href: "#", "data-path": plan, title: `Open ${plan}` }, h("code", {}, plan)) : null,
+    ),
+  );
+}
+
+const PATCH_STATUS = { add: ["A", "added"], delete: ["D", "deleted"], move: ["R", "modified"], update: ["M", "modified"] };
+
+/** One file of an apply_patch step, headed like a row of the Changes panel; the first starts open. */
+function patchFile(p, f, i) {
+  const rel = f.relativePath || short(f.movePath || f.filePath);
+  const slash = rel.lastIndexOf("/");
+  const [letter, cls] = PATCH_STATUS[f.type] || PATCH_STATUS.update;
+  const head = h(
+    "span",
+    { class: "patch-file-head" },
+    h("span", { class: `change-status ${cls}` }, letter),
+    h("span", { class: "change-name" }, rel.slice(slash + 1)),
+    h("span", { class: "change-dir" }, slash > 0 ? rel.slice(0, slash) : ""),
+    h("span", { class: "counts" }, h("span", { class: "add" }, `+${f.additions || 0}`), " ", h("span", { class: "del" }, `-${f.deletions || 0}`)),
+  );
+  const body = h(
+    "div",
+    {},
+    f.patch ? renderDiff(f.patch) : null,
+    f.type === "delete" ? null : h("button", { class: "link-btn", onClick: () => send({ type: "openDiff", filePath: f.movePath || f.filePath, diff: f.patch }) }, "Open diff"),
+  );
+  return collapsible(`${p.id}-file${i}`, head, body, "patch-file", i === 0);
+}
 
 // ------------------------------------------------------------------ subagents
 
@@ -1032,8 +1486,9 @@ function renderDiff(diff) {
   }
   const oldRows = rows.filter((r) => r.kind === "ctx" || r.kind === "del");
   const newRows = rows.filter((r) => r.kind === "ctx" || r.kind === "add");
-  highlightLines(oldRows.map((r) => r.text).join("\n"), lang).forEach((html, i) => (oldRows[i].html = html));
-  highlightLines(newRows.map((r) => r.text).join("\n"), lang).forEach((html, i) => (newRows[i].html = html));
+  // A new file has no old side (and a deleted one no new side); an empty text still highlights to one line.
+  if (oldRows.length) highlightLines(oldRows.map((r) => r.text).join("\n"), lang).forEach((html, i) => (oldRows[i].html = html));
+  if (newRows.length) highlightLines(newRows.map((r) => r.text).join("\n"), lang).forEach((html, i) => (newRows[i].html = html));
   for (const r of rows) {
     if (r.kind === "hunk") box.append(h("div", { class: "diff-line hunk" }, h("span", { class: "ln" }, ""), h("span", { class: "code" }, "⋯")));
     else box.append(h("div", { class: `diff-line ${r.kind}` }, h("span", { class: "ln" }, r.ln), h("span", { class: "code", html: r.html })));
@@ -1203,8 +1658,13 @@ function displayTitle(title) {
 function agentColor(name) {
   if (state.agentColors[name]) return state.agentColors[name];
   const palette = document.body.classList.contains("vscode-light") ? AGENT_COLORS.light : AGENT_COLORS.dark;
-  const i = state.agents.indexOf(name);
-  return palette[(i < 0 ? 0 : i) % palette.length];
+  // Subagents continue the palette after the primary agents.
+  let i = state.agents.indexOf(name);
+  if (i < 0) {
+    const sub = state.subagents.findIndex((a) => a.name === name);
+    i = sub < 0 ? 0 : state.agents.length + sub;
+  }
+  return palette[i % palette.length];
 }
 
 function renderModeBtn() {
@@ -2141,8 +2601,47 @@ messagesEl.addEventListener("click", (e) => {
     setTimeout(() => (copy.innerHTML = icons.copy), 1200);
     return;
   }
+  const copyReply = e.target.closest(".copy-reply");
+  if (copyReply) {
+    const turn = copyReply.dataset.turn;
+    const text = state.order
+      .map((id) => state.messages.get(id))
+      .filter((m) => m?.info.role === "assistant" && m.info.parentID === turn)
+      .flatMap((m) => [...m.parts.values()].sort((a, b) => (a.id < b.id ? -1 : 1)).filter((p) => p.type === "text" && !p.synthetic && p.text?.trim()).map((p) => p.text.trim()))
+      .join("\n\n");
+    navigator.clipboard.writeText(text);
+    copyReply.innerHTML = icons.check;
+    setTimeout(() => (copyReply.innerHTML = icons.copy), 1200);
+    return;
+  }
+  // Files the model or a tool returned: the buttons, or a click on the image itself, open or save them.
+  const fileEl = e.target.closest("[data-file]");
+  const action = e.target.closest("[data-file-action]")?.dataset.fileAction ?? (e.target.matches("img") ? "open" : null);
+  if (fileEl && action) {
+    const f = fileParts.get(fileEl.dataset.file);
+    if (f) send({ type: action === "save" ? "saveAttachment" : "openAttachment", url: f.url, mime: f.mime, filename: fileName(f) });
+    return;
+  }
+  // Tool results: rows open their file (at a line), "N more" and "Show page" unfold, a page opens.
+  const more = e.target.closest("[data-expand]");
+  if (more) {
+    const id = more.dataset.expand;
+    expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+    return void queueRender(more.dataset.msg);
+  }
+  const url = e.target.closest("[data-open-url]")?.dataset.openUrl;
+  if (url) return void send({ type: "openExternal", url });
+  const row = e.target.closest("[data-open-path]");
+  if (row && !e.target.closest("a")) {
+    return void send({ type: "openFile", path: row.dataset.openPath, line: row.dataset.openLine ? +row.dataset.openLine : undefined });
+  }
+  const mdImg = e.target.closest(".md-img");
+  if (mdImg) return void openPath(mdImg.dataset.path);
   const toggle = e.target.closest(".mermaid-toggle");
   if (toggle) return void toggle.closest(".mermaid-block").classList.toggle("show-source");
+  // VS Code's webview wrapper opens any clicked link itself, from a listener on the window that
+  // ignores preventDefault, so links handled here stop there: otherwise a web link opens twice.
+  if (e.target.closest("a[href]")) e.stopPropagation();
   const a = e.target.closest("a:not(.file-ref)");
   const href = a?.getAttribute("href");
   if (href) {
@@ -2168,8 +2667,8 @@ function fileUrlToPath(url) {
   }
 }
 function openPath(p, line) {
-  const m = String(p).match(/^(.*?)(?::(\d+))?$/);
-  send({ type: "openFile", path: m[1], line: line ?? (m[2] ? +m[2] : undefined) });
+  const target = fileTarget(p);
+  send({ type: "openFile", path: target.path, line: line ?? target.line });
 }
 
 // --------------------------------------------------------- history / more
@@ -2486,6 +2985,7 @@ window.addEventListener("message", (ev) => {
       state.agents = msg.agents.length ? msg.agents : ["build"];
       state.agentColors = msg.agentColors || {};
       state.subagents = msg.subagents || [];
+      state.mcpServers = msg.mcpServers || [];
       if (!state.agents.includes(state.agent)) state.agent = state.agents[0];
       state.models = msg.models;
       state.cwd = msg.cwd;
@@ -2528,6 +3028,14 @@ window.addEventListener("message", (ev) => {
       }
       break;
     }
+    case "lines":
+      for (const [n, text] of Object.entries(msg.lines || {})) sourceLines.set(`${msg.path}:${n}`, text);
+      for (const el of messagesEl.querySelectorAll(".code[data-src]")) if (!el.textContent) el.textContent = sourceLines.get(el.dataset.src) || "";
+      break;
+    case "image":
+      localImages.set(msg.path, msg.url || null);
+      for (const img of messagesEl.querySelectorAll("img[data-local]")) if (img.dataset.local === msg.path) showLocalImage(img, msg.url || null);
+      break;
     case "childParts": {
       if (!state.childParts.has(msg.sessionID)) state.childParts.set(msg.sessionID, new Map());
       const map = state.childParts.get(msg.sessionID);

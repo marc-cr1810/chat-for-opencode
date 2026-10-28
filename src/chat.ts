@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
+import { mkdtemp } from "fs/promises";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { applyPatch } from "diff";
@@ -92,6 +94,12 @@ const IMAGE_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** Image types a reply can show from the workspace: the attachable ones, and some only a browser draws. */
+const SHOWN_IMAGE_TYPES: Record<string, string> = { ...IMAGE_TYPES, ".svg": "image/svg+xml", ".bmp": "image/bmp", ".ico": "image/x-icon", ".avif": "image/avif" };
+/** Files larger than this aren't read for the lines code-intelligence results point at. */
+const MAX_SOURCE_BYTES = 5 * 1024 * 1024;
+/** A name that is safe to write in a folder: no path, no odd characters. */
+const safeFileName = (name: string) => path.basename(name || "").replace(/[^\w.\- ]+/g, "_").replace(/^\.+/, "") || "file";
 
 type ModelRef = { providerID: string; modelID: string; variant?: string };
 
@@ -546,6 +554,14 @@ export class ChatController implements vscode.Disposable {
         return;
       case "openDiff":
         return this.openDiff(msg.filePath, msg.diff, msg.before, msg.after);
+      case "loadLines":
+        return this.post({ type: "lines", path: msg.path, lines: await this.sourceLines(msg.path, msg.lines) });
+      case "loadImage":
+        return this.post({ type: "image", path: msg.path, url: await this.imageDataUrl(msg.path) });
+      case "openAttachment":
+        return this.openAttachment(msg.url, msg.filename);
+      case "saveAttachment":
+        return this.saveAttachment(msg.url, msg.filename);
       case "revert":
         if (!(await this.confirmIfBusy("Undo"))) return;
         return this.revert(msg.messageID);
@@ -628,10 +644,12 @@ export class ChatController implements vscode.Disposable {
       this.post({ type: "serverStatus", status: "error" });
       return;
     }
-    const [providers, agents, commands] = await Promise.all([
+    const [providers, agents, commands, mcp] = await Promise.all([
       this.server.request<any>("GET", "/config/providers"),
       this.server.request<any[]>("GET", "/agent"),
       this.server.request<any[]>("GET", "/command"),
+      // MCP server names, so their tools' IDs ("<server>_<tool>") can be read back; optional.
+      this.server.request<Record<string, unknown>>("GET", "/mcp").catch(() => ({})),
     ]);
     this.agentRules = new Map(agents.map((a) => [a.name, a.permission ?? []]));
     const subagents = agents.filter((a) => a.mode !== "primary" && !a.hidden);
@@ -663,6 +681,7 @@ export class ChatController implements vscode.Disposable {
       subagents: subagents.map((a) => ({ name: a.name, description: a.description ?? "" })),
       agentColors: Object.fromEntries(agents.filter((a) => a.color).map((a) => [a.name, a.color])),
       commands: commands.map((c) => ({ name: c.name, description: c.description ?? "" })),
+      mcpServers: Object.keys(mcp ?? {}),
       cwd: this.server.directory,
     });
     this.sendSettings();
@@ -1106,6 +1125,64 @@ export class ChatController implements vscode.Disposable {
       selection: new vscode.Range(l, 0, l, 0),
       preview: true,
     });
+  }
+
+  /**
+   * A workspace image as a data URL, for an image in a reply: the webview can't read the workspace
+   * itself. Only image files, and not huge ones; undefined if it can't be read.
+   */
+  private async imageDataUrl(p: string) {
+    const mime = SHOWN_IMAGE_TYPES[path.extname(p).toLowerCase()];
+    if (!mime) return undefined;
+    try {
+      const uri = vscode.Uri.file(this.absolute(p));
+      if ((await vscode.workspace.fs.stat(uri)).size > MAX_IMAGE_BYTES) return undefined;
+      return `data:${mime};base64,${Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("base64")}`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Lines of a file by 1-based number, trimmed, for code-intelligence results (which give only
+   * positions). Missing lines and unreadable or huge files give nothing.
+   */
+  private async sourceLines(p: string, numbers: number[]) {
+    const out: Record<number, string> = {};
+    try {
+      const uri = vscode.Uri.file(this.absolute(p));
+      if ((await vscode.workspace.fs.stat(uri)).size > MAX_SOURCE_BYTES) return out;
+      const lines = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8").split(/\r?\n/);
+      for (const n of numbers) if (lines[n - 1] !== undefined) out[n] = lines[n - 1].trim().slice(0, 300);
+    } catch {}
+    return out;
+  }
+
+  /** The contents of a file the model or a tool returned, from its data or file URL. */
+  private async attachmentBytes(url: string): Promise<Uint8Array> {
+    if (url.startsWith("file:")) return vscode.workspace.fs.readFile(vscode.Uri.parse(url));
+    const comma = url.indexOf(",");
+    if (!url.startsWith("data:") || comma < 0) throw new Error("This file can't be opened.");
+    const body = url.slice(comma + 1);
+    return url.slice(0, comma).endsWith(";base64") ? Buffer.from(body, "base64") : Buffer.from(decodeURIComponent(body));
+  }
+
+  /** Opens a returned file in VS Code: in place if it's on disk, else from a temporary copy. */
+  private async openAttachment(url: string, filename: string) {
+    if (/^https?:\/\//.test(url)) return void vscode.env.openExternal(vscode.Uri.parse(url));
+    let uri = url.startsWith("file:") ? vscode.Uri.parse(url) : undefined;
+    if (!uri) {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "chat-for-opencode-"));
+      uri = vscode.Uri.file(path.join(dir, safeFileName(filename)));
+      await vscode.workspace.fs.writeFile(uri, await this.attachmentBytes(url));
+    }
+    await vscode.commands.executeCommand("vscode.open", uri, { viewColumn: vscode.ViewColumn.One, preview: true });
+  }
+
+  private async saveAttachment(url: string, filename: string) {
+    const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(this.dir, safeFileName(filename))) });
+    if (!target) return;
+    await vscode.workspace.fs.writeFile(target, await this.attachmentBytes(url));
   }
 
   /** The active editor's selection, attached as hidden context. */

@@ -52,6 +52,14 @@ function onMessage(msg) {
       const current = scene.session && !scene.tabs ? [{ ...scene.session, time: { updated: Date.now() } }] : [];
       return post({ type: "sessions", sessions: [...current, ...open, ...past] });
     }
+    case "loadLines": {
+      // Lines of code for lsp results, from the scene's `lines` ("path:line" → text).
+      const lines = Object.fromEntries(msg.lines.map((n) => [n, scene.lines?.[`${msg.path}:${n}`]]).filter(([, t]) => t !== undefined));
+      return post({ type: "lines", path: msg.path, lines });
+    }
+    case "loadImage":
+      // Workspace images in replies, from the scene's `images` (a missing one gets no URL).
+      return post({ type: "image", path: msg.path, url: scene.images?.[msg.path] });
     case "loadChild":
       // A subagent session's steps and text, from the scene's `children`.
       return post({ type: "childParts", sessionID: msg.sessionID, parts: scene.children?.[msg.sessionID] ?? [] });
@@ -83,7 +91,9 @@ function load() {
     subagents: [
       { name: "explore", description: "Fast agent specialized for exploring codebases" },
       { name: "general", description: "General-purpose agent for multi-step tasks" },
+      { name: "review", description: "Reviews code for bugs and risky changes" },
     ],
+    mcpServers: ["github", "context7"],
     readOnlyAgents: ["plan"],
     autoEdit: false,
     autoRead: false,

@@ -14,26 +14,35 @@ function session(title, extra = {}) {
   return { id: id("ses"), title, directory: CWD, time: { created: T0, updated: T0 + 60_000 }, ...extra };
 }
 
+// Replies answer the user message before them, as OpenCode's parentID says.
+let lastUser;
+
 /** A user message. */
 function user(s, text, agent = "build") {
   const info = { id: id("msg"), sessionID: s.id, role: "user", agent, model: { providerID: "opencode", modelID: "big-pickle" }, time: { created: T0 } };
+  lastUser = info.id;
   return { info, parts: [{ id: id("prt"), messageID: info.id, sessionID: s.id, type: "text", text }] };
 }
 
-/** An assistant message; `parts` come from the helpers below. Pass done: false for one still streaming. */
-function assistant(s, agent, parts, { done = true, tokens = 12_000 } = {}) {
+/**
+ * An assistant message; `parts` come from the helpers below. Pass done: false for one still streaming,
+ * and finish: "tool-calls" for a step that another follows.
+ */
+function assistant(s, agent, parts, { done = true, tokens = 12_000, output = 800, cost = 0, secs = 20, finish = "stop", model = "big-pickle" } = {}) {
   const info = {
     id: id("msg"),
     sessionID: s.id,
+    parentID: lastUser,
     role: "assistant",
     agent,
     mode: agent,
-    modelID: "big-pickle",
+    modelID: model,
     providerID: "opencode",
     path: { cwd: CWD, root: CWD },
-    cost: 0,
-    tokens: { input: tokens, output: 800, reasoning: 0, cache: { read: 0, write: 0 } },
-    time: done ? { created: T0, completed: T0 + 20_000 } : { created: T0 },
+    cost,
+    tokens: { input: tokens, output, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: done ? { created: T0, completed: T0 + secs * 1000 } : { created: T0 },
+    ...(done ? { finish } : {}),
   };
   return { info, parts: parts.map((p) => ({ id: id("prt"), messageID: info.id, sessionID: s.id, ...p })) };
 }
@@ -176,6 +185,201 @@ export function debounce<T extends unknown[]>(fn: (...args: T) => void, ms = 200
           text("Added `webview/debounce.ts` and wrapped the resize handler in it."),
         ]),
       ],
+    };
+  },
+
+  /**
+   * Files and the rest of what replies can carry: an apply_patch over several files, a Read of an
+   * image and a PDF, files the model returned, workspace images in markdown (one missing), a command
+   * run as a subtask, links with line anchors, and each turn's time, tokens and cost.
+   */
+  files() {
+    const s = session("Docs and review");
+    const rel = (f) => `${CWD}/${f}`;
+    const patch = (f, lines) => [`Index: ${f}`, "===================================================================", `--- ${f}`, `+++ ${f}`, ...lines, ""].join("\n");
+    const serverPatch = patch(rel("src/server.ts"), [
+      "@@ -117,5 +117,5 @@",
+      "   private scheduleRetry(attempt: number) {",
+      "-    const delay = this.retryDelay * 2 ** attempt;",
+      "+    const delay = this.backoffMs * 2 ** attempt;",
+      "     this.timer = setTimeout(() => this.connect(), Math.min(delay, 30_000));",
+      "   }",
+    ]);
+    const applyPatch = tool("apply_patch", { patchText: "*** Begin Patch\n…\n*** End Patch" }, "Success. Updated the following files:\nM src/server.ts\nM src/settings.ts\nA test/backoff.test.ts");
+    applyPatch.state.metadata = {
+      files: [
+        { filePath: rel("src/server.ts"), relativePath: "src/server.ts", type: "update", patch: serverPatch, additions: 1, deletions: 1 },
+        { filePath: rel("src/settings.ts"), relativePath: "src/settings.ts", type: "update", patch: patch(rel("src/settings.ts"), ["@@ -40,3 +40,3 @@", "-  retryDelay: number;", "+  backoffMs: number;", "   retries: number;"]), additions: 1, deletions: 1 },
+        { filePath: rel("test/backoff.test.ts"), relativePath: "test/backoff.test.ts", type: "add", patch: patch(rel("test/backoff.test.ts"), ["@@ -0,0 +1,2 @@", '+import { expect, test } from "vitest";', '+test("backoff caps at 30s", () => expect(Math.min(1000 * 2 ** 10, 30_000)).toBe(30_000));']), additions: 2, deletions: 0 },
+      ],
+    };
+
+    // Drawn stand-ins for a screenshot and a diagram (no real images).
+    const svgUrl = (body, w, hgt) => `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${hgt}" viewBox="0 0 ${w} ${hgt}">${body}</svg>`)}`;
+    const shot = svgUrl(
+      `<rect width="640" height="400" fill="#181818"/><line x1="0" y1="36" x2="640" y2="36" stroke="#2b2b2b"/><rect x="16" y="12" width="150" height="12" rx="3" fill="#ccc" opacity=".7"/>` +
+        `<rect x="16" y="52" width="300" height="34" rx="7" fill="#313131" stroke="#2b2b2b"/><rect x="28" y="64" width="220" height="10" rx="3" fill="#ccc" opacity=".6"/>` +
+        `<line x1="20" y1="102" x2="20" y2="190" stroke="#2b2b2b" stroke-width="2"/><rect x="34" y="128" width="560" height="56" rx="5" fill="#2b2b2b"/>` +
+        `<rect x="34" y="138" width="560" height="10" fill="#9bb955" opacity=".3"/><rect x="34" y="158" width="560" height="10" fill="#f00" opacity=".25"/>` +
+        `<rect x="16" y="206" width="520" height="10" rx="3" fill="#ccc" opacity=".5"/><rect x="16" y="318" width="608" height="66" rx="10" fill="#313131" stroke="#5c9cf5"/><circle cx="604" cy="367" r="10" fill="#5c9cf5"/>`,
+      640,
+      400,
+    );
+    const node = (x, y, t) => `<rect x="${x}" y="${y}" width="130" height="36" rx="6" fill="#2b2b2b" stroke="#5c9cf5"/><text x="${x + 65}" y="${y + 23}" font-family="sans-serif" font-size="13" fill="#ccc" text-anchor="middle">${t}</text>`;
+    const flow = svgUrl(`<rect width="560" height="120" fill="#1f1f1f"/>${node(20, 40, "Webview")}${node(215, 40, "Extension")}${node(410, 40, "OpenCode")}<path d="M150 58h63M345 58h63" stroke="#ccc" stroke-opacity=".6"/>`, 560, 120);
+
+    const readImage = tool("read", { filePath: rel("docs/screenshot-dark.png") }, "Image read successfully");
+    readImage.state.attachments = [{ type: "file", mime: "image/svg+xml", url: shot }];
+    const readPdf = tool("read", { filePath: rel("docs/spec.pdf") }, "PDF read successfully");
+    readPdf.state.attachments = [{ type: "file", mime: "application/pdf", url: `data:application/pdf;base64,${btoa("%PDF-1.4 " + "x".repeat(2000))}` }];
+    const notes = "# Screenshot notes\n\nThe header now has a dropdown in place of the tab strip.\n";
+
+    const review = tool("task", { description: "Review src/chat.ts", subagent_type: "review", prompt: "…" }, "<task_result>\n**2 findings.** `openExternal` accepts any http(s) URL from the webview.\n</task_result>");
+    review.state.metadata = { sessionId: "ses_review" };
+
+    const messages = [
+      user(s, "Rename retryDelay to backoffMs everywhere"),
+      assistant(s, "build", [applyPatch], { finish: "tool-calls", tokens: 14_200, output: 310, cost: 0.011, secs: 9 }),
+      assistant(s, "build", [text("Renamed `retryDelay` to `backoffMs` in `src/server.ts` and `src/settings.ts`, and added `test/backoff.test.ts`.")], { tokens: 15_100, output: 120, cost: 0.006, secs: 12 }),
+      user(s, "Does the screenshot in docs/ still match the panel? Then give me a diagram of the event flow."),
+      assistant(s, "build", [
+        readImage,
+        readPdf,
+        text("The screenshot still shows the old tab strip; the header now has a dropdown instead. Here's the event flow:"),
+        { type: "file", mime: "image/svg+xml", filename: "event-flow.svg", url: flow },
+        { type: "file", mime: "text/markdown", filename: "screenshot-notes.md", url: `data:text/markdown;base64,${btoa(notes)}` },
+      ], { tokens: 18_400, output: 640, cost: 0.024, secs: 31 }),
+      user(s, "Update the screenshots section of the README"),
+      assistant(s, "build", [
+        text(`## Screenshots
+
+The chat panel in the side bar, mid-edit:
+
+![Chat panel, dark theme](docs/screenshot-dark.png)
+
+I left the old tab-strip image out, since it no longer exists: ![Tabs](docs/tabs.png)
+
+The retry loop is [startRetry](src/server.ts#L120-L140), and its delay comes from [the settings](src/settings.ts:40). [OpenCode's docs](https://opencode.ai/docs) cover the server side.`),
+      ], { tokens: 19_000, output: 410, cost: 0.018, secs: 14 }),
+    ];
+    // A command whose agent is a subagent: the user message is a single subtask part.
+    const cmd = user(s, "");
+    cmd.parts = [{ id: id("prt"), messageID: cmd.info.id, sessionID: s.id, type: "subtask", agent: "review", command: "review", description: "review changes", prompt: "Review the changes in src/chat.ts for bugs and risky behaviour." }];
+    messages.push(cmd, assistant(s, "build", [review, text("The review agent found two issues; the first, in `src/chat.ts:544`, is worth fixing before release.")], { tokens: 21_300, output: 520, cost: 0.031, secs: 52 }));
+
+    return {
+      cwd: CWD,
+      agent: "build",
+      session: s,
+      images: { "docs/screenshot-dark.png": shot },
+      children: { ses_review: [] },
+      messages,
+    };
+  },
+
+  /**
+   * Tool steps that show structure: grep matches and glob files to open, MCP calls with their
+   * arguments, lsp lookups, the plan agent handing over to build, a fetched page and web search
+   * results, and tool calls the model got wrong.
+   */
+  tools() {
+    const s = session("Tool steps");
+    const abs = (f) => `${CWD}/${f}`;
+    const done = (name, input, output, metadata = {}) => {
+      const t = tool(name, input, output);
+      t.state.metadata = metadata;
+      return t;
+    };
+    const grepOut = [
+      "Found 6 matches",
+      `${abs("src/server.ts")}:`,
+      "  Line 42:   private retryDelay = 1000;",
+      "  Line 119:     const delay = this.retryDelay * 2 ** attempt;",
+      "  Line 131:     this.retryDelay = settings.retryDelay;",
+      "",
+      `${abs("src/settings.ts")}:`,
+      "  Line 40:   retryDelay: number;",
+      '  Line 77:   retryDelay: get("retryDelay", 1000),',
+      "",
+      `${abs("src/chat.ts")}:`,
+      "  Line 388:       retryDelay: this.server.retryDelay,",
+    ].join("\n");
+    const tests = Array.from({ length: 24 }, (_, i) => abs(`test/case${String(i + 1).padStart(2, "0")}.test.ts`));
+    const range = (line) => ({ start: { line: line - 1, character: 2 }, end: { line: line - 1, character: 12 } });
+    const loc = (f, line) => ({ uri: `file://${abs(f)}`, range: range(line) });
+
+    const issue = done(
+      "github_create_issue",
+      { owner: "marc-cr1810", repo: "chat-for-opencode", title: "Links open twice in the chat panel", labels: ["bug"], body: "VS Code's webview wrapper opens links from a window listener.\nThe panel opens them too." },
+      JSON.stringify({ number: 214, url: "https://github.com/marc-cr1810/chat-for-opencode/issues/214", state: "open" }),
+    );
+    const docs = tool("context7_get-library-docs", { libraryName: "vscode webview API" });
+    docs.state.status = "running";
+
+    // plan_exit: first answered No, then Yes, after which OpenCode adds a hidden note for build.
+    const planTurns = () => {
+      const ask = user(s, "Plan the debounce change", "plan");
+      const kept = assistant(s, "plan", [text("The plan is in `.opencode/plans/debounce.md`: one helper, one call site, a test."), done("plan_exit", {}, "")]);
+      Object.assign(kept.parts[1].state, { status: "error", error: "The user dismissed this question" });
+      const yes = user(s, "Fine, go ahead", "plan");
+      const handover = assistant(s, "plan", [done("plan_exit", {}, "User approved switching to build agent. Wait for further instructions.")]);
+      const note = user(s, "", "build");
+      note.parts = [{ id: id("prt"), messageID: note.info.id, sessionID: s.id, type: "text", synthetic: true, text: "The plan at .opencode/plans/debounce.md has been approved, you can now edit files. Execute the plan" }];
+      return [ask, kept, yes, handover, note, assistant(s, "build", [tool("write", { filePath: abs("webview/debounce.ts"), content: "export {};\n" })])];
+    };
+
+    const page = `# Webview API
+
+The webview API allows extensions to create fully customizable views within Visual Studio Code. Webviews can render almost any HTML content and communicate with extensions using [message passing](/api/references/vscode-api#Webview).
+
+## Links
+
+Links in webviews open through the editor; see server.ts in the samples. ![Diagram](/assets/api/webview.png)
+
+${"More of the guide follows. ".repeat(40)}`;
+    const searchOut = [
+      "Title: Error loading webview: Could not register service worker",
+      "URL: https://github.com/microsoft/vscode/issues/125993",
+      "Text: InvalidStateError after updating; deleting the Service Worker cache folder and restarting fixes it for most people.",
+      "",
+      "Title: Webview API | Visual Studio Code Extension API",
+      "URL: https://code.visualstudio.com/api/extension-guides/webview",
+      "Text: Webviews are loaded in an iframe with a service worker that serves local resources.",
+    ].join("\n");
+
+    const messages = [
+      user(s, "Where is retryDelay used, and which tests are there?"),
+      assistant(s, "build", [done("grep", { pattern: "retryDelay", path: abs("src") }, grepOut, { matches: 6, truncated: false }), done("glob", { pattern: "**/*.test.ts" }, tests.join("\n"), { count: 24, truncated: false })]),
+      user(s, "Who calls startRetry, and what's in watchdog.ts?"),
+      assistant(s, "build", [
+        done("lsp", { operation: "goToDefinition", filePath: abs("src/chat.ts"), line: 210, character: 14 }, "[]", { result: [{ targetUri: `file://${abs("src/server.ts")}`, targetRange: range(120), targetSelectionRange: range(120) }] }),
+        done("lsp", { operation: "findReferences", filePath: abs("src/server.ts"), line: 120, character: 11 }, "[]", { result: [loc("src/server.ts", 88), loc("src/server.ts", 126), loc("src/chat.ts", 210)] }),
+        done("lsp", { operation: "documentSymbol", filePath: abs("src/watchdog.ts") }, "[]", { result: [{ name: "watchServer", kind: 12, range: range(21), selectionRange: range(21), children: [] }] }),
+        done("lsp", { operation: "hover", filePath: abs("src/server.ts"), line: 120, character: 11 }, "[]", { result: [{ contents: { kind: "markdown", value: "```ts\n(method) OpencodeServer.startRetry(attempt: number): void\n```" } }] }),
+      ]),
+      user(s, "File an issue for the link bug"),
+      assistant(s, "build", [issue, docs], { done: false }),
+      ...planTurns(),
+      user(s, "Why does VS Code say it could not register a service worker?"),
+      assistant(s, "build", [done("websearch", { query: "vscode webview could not register service worker" }, searchOut), done("webfetch", { url: "https://code.visualstudio.com/api/extension-guides/webview", format: "markdown" }, page)]),
+      user(s, "Read server.ts and tidy the retry code"),
+      assistant(s, "build", [
+        done("invalid", { tool: "read_file", error: "Model tried to call unavailable tool 'read_file'. Available tools: read, edit, write." }, "The arguments provided to the tool are invalid: Model tried to call unavailable tool 'read_file'."),
+        done("invalid", { tool: "edit", error: "Invalid input for tool edit: oldString is required" }, "The arguments provided to the tool are invalid: Invalid input for tool edit: oldString is required"),
+      ]),
+    ];
+    return {
+      cwd: CWD,
+      agent: "build",
+      session: s,
+      messages,
+      lines: {
+        [`${abs("src/server.ts")}:120`]: "private startRetry(attempt: number) {",
+        [`${abs("src/server.ts")}:88`]: "this.startRetry(0);",
+        [`${abs("src/server.ts")}:126`]: "this.startRetry(attempt + 1);",
+        [`${abs("src/chat.ts")}:210`]: "this.server.startRetry(0);",
+        [`${abs("src/watchdog.ts")}:21`]: "export function watchServer(serverPid: number, ownerPid = process.pid, everyMs = 1000) {",
+      },
     };
   },
 

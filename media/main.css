@@ -574,3 +574,106 @@ body.vscode-light, body.vscode-high-contrast-light {
 }
 .toast.info { background: var(--vscode-inputValidation-infoBackground, #063b49); border-color: var(--vscode-inputValidation-infoBorder, #1a85ff); }
 .toast.show { opacity: 1; transform: none; pointer-events: auto; }
+
+/* apply_patch: one block per file, headed like a row of the Changes panel */
+.patch-files { display: flex; flex-direction: column; gap: 2px; }
+.patch-file.row { margin: 0; }
+.patch-file > .coll-head { padding: 1px 2px; border-radius: 4px; }
+.patch-file > .coll-head:hover { background: var(--hover); }
+.patch-file-head { display: flex; align-items: center; gap: 6px; font-size: 0.92em; min-width: 0; flex: 1; }
+.patch-file-head .counts { margin-left: auto; font-family: var(--mono); font-size: 0.9em; flex-shrink: 0; }
+.patch-file > .coll-body { margin: 2px 0 4px; }
+
+/* files a tool or the model returned */
+.tool-attachments { display: flex; flex-direction: column; gap: 6px; }
+.attach-img { display: block; max-width: 100%; max-height: 220px; border-radius: 6px; border: 1px solid var(--border); cursor: zoom-in; }
+.file-card {
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.08)); min-width: 0; max-width: 100%;
+}
+.file-card .fc-icon { display: inline-flex; color: var(--accent); flex-shrink: 0; }
+.file-card .fc-text { min-width: 0; flex: 1; line-height: 1.35; }
+.file-card .fc-name { font-family: var(--mono); font-size: 0.92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card .fc-meta { color: var(--muted); font-size: 0.86em; }
+.file-card .fc-btns { display: flex; flex-shrink: 0; }
+.image-card { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.image-card .card-img { display: block; max-width: 100%; height: auto; margin: 0 auto; cursor: zoom-in; }
+.image-card .file-card { border: none; border-top: 1px solid var(--border); border-radius: 0; }
+
+/* workspace images in markdown, and one that isn't there */
+.markdown .md-img { position: relative; display: inline-block; max-width: 100%; margin: 0.3em 0; cursor: pointer; vertical-align: top; }
+.markdown .md-img img { display: block; max-width: 100%; border-radius: 6px; border: 1px solid var(--border); }
+.markdown .md-img img:not([src]) { width: 160px; height: 90px; background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1)); }
+.markdown .md-img .img-path {
+  position: absolute; left: 6px; bottom: 6px; max-width: calc(100% - 12px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 6px; border-radius: 4px; font-family: var(--mono); font-size: 0.82em;
+  background: color-mix(in srgb, var(--bg) 85%, transparent); color: var(--vscode-textLink-foreground); opacity: 0; transition: opacity 0.12s;
+}
+.markdown .md-img:hover .img-path { opacity: 1; }
+.markdown .img-missing {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 4px; font-size: 0.92em; color: var(--muted);
+  border: 1px dashed var(--border);
+}
+.markdown .img-missing code { color: var(--muted); background: none; padding: 0; }
+
+/* a command run as a subtask names the agent it went to */
+.cmd-to { display: inline-flex; align-items: baseline; gap: 4px; color: var(--muted); font-size: 0.92em; }
+.agent-tag { font-family: var(--mono); font-weight: 600; color: var(--tag); }
+
+/* model, time, tokens and cost under a turn's last reply: on hover, and always on the latest */
+.msg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: 4px; color: var(--muted); font-size: 0.85em; opacity: 0; transition: opacity 0.12s; min-width: 0; }
+.msg.assistant:hover .msg-foot, .msg.assistant:not(:has(~ .msg)) .msg-foot, .msg-foot:focus-within { opacity: 1; }
+.msg-foot .sep { opacity: 0.5; }
+.msg-foot .stat { white-space: nowrap; flex-shrink: 0; }
+.msg-foot .model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.msg-foot .icon-btn { width: 20px; height: 20px; margin-left: auto; flex-shrink: 0; }
+
+/* result lists: grep matches, glob files, lsp places; rows open their file */
+.results { border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; max-height: 320px; overflow-y: auto; font-size: 0.92em; }
+.res-file { display: flex; align-items: baseline; gap: 6px; padding: 1px 8px; cursor: pointer; min-width: 0; }
+.res-file:hover, .res-line:hover, .res-hit:hover { background: var(--hover); }
+.res-file .change-name { color: var(--fg); }
+.res-file .count { margin-left: auto; color: var(--muted); font-size: 0.9em; flex-shrink: 0; }
+.res-line { display: flex; gap: 8px; padding: 0 8px 0 22px; cursor: pointer; font-family: var(--mono); font-size: 0.95em; white-space: pre; min-width: 0; }
+.res-line .ln { color: var(--muted); opacity: 0.7; min-width: 2.5em; text-align: right; flex-shrink: 0; }
+.res-line .txt { overflow: hidden; text-overflow: ellipsis; }
+.res-line mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33)); color: inherit; border-radius: 2px; }
+.res-more { padding: 2px 8px 0 22px; color: var(--muted); cursor: pointer; }
+.res-more:hover { color: var(--fg); }
+.res-hit { display: flex; flex-direction: column; padding: 2px 8px; cursor: pointer; min-width: 0; }
+.res-hit .where { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.res-hit .sym { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-hit .loc { color: var(--vscode-textLink-foreground); font-family: var(--mono); font-size: 0.95em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-hit .code { font-family: var(--mono); font-size: 0.92em; color: var(--muted); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.res-hit .code:empty { display: none; }
+
+/* MCP: the server as a quiet prefix, then what the tool was given */
+.tool-server { color: var(--muted); font-weight: 400; }
+.args { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 10px; font-size: 0.92em; margin: 2px 0 6px; }
+.args dt { color: var(--muted); }
+.args dd { margin: 0; font-family: var(--mono); font-size: 0.95em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* plan_exit: the hand-over, in the two agents' colours */
+.handoff { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 0.95em; flex-wrap: wrap; }
+.handoff .tool-icon { color: var(--ok); }
+.handoff .muted { color: var(--muted); display: inline-flex; }
+.handoff.kept .tool-icon { color: var(--muted); }
+.handoff .plan-file { margin-left: auto; }
+
+/* Fetch: the page previewed as markdown. Web search: results as links. */
+.page-preview { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.page-preview .report-preview { max-height: 7.5em; }
+.page-preview > .markdown:not(.report-preview) { max-height: 480px; overflow-y: auto; }
+.result-list { display: flex; flex-direction: column; gap: 6px; }
+.result { min-width: 0; }
+.result a { color: var(--vscode-textLink-foreground); text-decoration: none; }
+.result a:hover { text-decoration: underline; }
+.result .domain { color: var(--muted); font-size: 0.86em; margin-left: 6px; }
+.result .snippet { color: var(--muted); font-size: 0.92em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.result-list .res-more { padding-left: 0; }
+
+/* a tool call the model got wrong: a soft warning, since the model is told and tries again */
+.tool-row.warn { border-left-color: var(--vscode-editorWarning-foreground, #cca700); }
+.tool-row.warn > .tool-icon { color: var(--vscode-editorWarning-foreground, #cca700); }
+.tool-row.warn .tool-name s { opacity: 0.75; }
+.tool-summary.warn { color: var(--vscode-editorWarning-foreground, #cca700); }
