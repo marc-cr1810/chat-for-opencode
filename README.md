@@ -61,8 +61,8 @@ Versions before 0.5 used `opencode.*` setting names, which clashed with OpenCode
 set are copied to the new names on first start.
 
 - `opencodeChat.binaryPath` – path to `opencode` (default: `opencode` on PATH)
-- `opencodeChat.autoApproveEdits` – apply edits without asking (shell commands always ask)
-- `opencodeChat.autoApproveReadOnly` – in plan (and other read-only agents), run read-only shell commands like `ls`, `grep` and `git log` without asking; redirects and write/exec flags still ask
+- `opencodeChat.autoApproveEdits` – apply edits and run read-only shell commands without asking (other shell commands always ask)
+- `opencodeChat.autoApproveReadOnly` – in plan (and other read-only agents), run read-only shell commands like `ls`, `grep` and `git log` without asking; redirects to files and write/exec flags still ask, while `2>/dev/null` and `2>&1` don't
 - `opencodeChat.model` – default `provider/model`
 - `opencodeChat.defaultAgent` – agent new conversations start in, e.g. `plan` (default: OpenCode's)
 - `opencodeChat.sendKey` – `enter` (default) or `ctrlEnter`, where Enter adds a new line

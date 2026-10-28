@@ -1204,7 +1204,7 @@ function renderModeBtn() {
   const on = readOnly ? state.autoRead : state.autoEdit;
   const [onLabel, offLabel, onTitle, offTitle] = readOnly
     ? ["Auto read-only", "Approve commands", "Read-only commands (ls, grep, git log…) run without asking — click to approve each", "OpenCode asks before every shell command — click to run read-only ones without asking"]
-    : ["Auto-approve edits", "Approve edits", "Edits are applied without asking — click to require approval", "OpenCode asks before editing files — click to auto-approve"];
+    : ["Auto-approve edits", "Approve edits", "Edits and read-only commands (ls, grep, git log…) run without asking; other commands still ask — click to require approval", "OpenCode asks before editing files or running commands — click to auto-approve edits and read-only commands"];
   edits.innerHTML = `${on ? icons.zap : icons.shield}<span>${on ? onLabel : offLabel}</span>`;
   edits.classList.toggle("on", on);
   edits.title = on ? onTitle : offTitle;

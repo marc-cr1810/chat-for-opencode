@@ -158,12 +158,12 @@
         "opencodeChat.autoApproveEdits": {
           "type": "boolean",
           "default": false,
-          "description": "Apply file edits without asking in new conversations. Shell commands always ask."
+          "description": "Apply file edits and run read-only shell commands (ls, grep, git log…) without asking in new conversations. Other shell commands always ask."
         },
         "opencodeChat.autoApproveReadOnly": {
           "type": "boolean",
           "default": false,
-          "description": "In read-only agents such as plan, run read-only shell commands (ls, grep, git log…) without asking. Commands with redirects or write/exec flags still ask."
+          "description": "In read-only agents such as plan, run read-only shell commands (ls, grep, git log…) without asking. Redirects to files and write/exec flags still ask; 2>/dev/null and 2>&1 don't."
         },
         "opencodeChat.model": {
           "type": "string",

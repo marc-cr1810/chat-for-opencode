@@ -4,7 +4,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { applyPatch } from "diff";
 import { collectTurns, cumulativeChange, FileChange, unapply } from "./patches";
-import { deniedByAgent, isReadOnlyAgent, Rule, sessionRules } from "./permissions";
+import { deniedByAgent, isReadOnlyAgent, quietlyReadOnly, Rule, sessionRules } from "./permissions";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
 
@@ -239,7 +239,25 @@ export class ChatController implements vscode.Disposable {
 
   private rulesFor(agent: string) {
     const rules = this.agentRules.get(agent) ?? [];
-    return sessionRules(this.autoEdit, rules, this.autoRead && isReadOnlyAgent(rules));
+    return sessionRules(this.autoEdit, rules, this.readOnlyShell(rules));
+  }
+
+  /** Read-only shell commands run without asking in either auto mode: plan's auto read-only, or build's auto edits. */
+  private readOnlyShell(rules: Rule[]) {
+    return isReadOnlyAgent(rules) ? this.autoRead : this.autoEdit;
+  }
+
+  /** Answer a request the extension can settle itself: one the agent denies, or a read-only command that only asked over a `2>/dev/null`. */
+  private settleItself(tab: Tab, p: any): boolean {
+    return this.rejectIfDenied(tab, p) || this.approveIfQuiet(tab, p);
+  }
+
+  private approveIfQuiet(tab: Tab, p: any): boolean {
+    const rules = tab.agent ? this.agentRules.get(tab.agent) : undefined;
+    if (!rules || p.sessionID !== tab.sessionID || p.permission !== "bash" || !this.readOnlyShell(rules)) return false;
+    if (!quietlyReadOnly(p.patterns ?? [], rules, this.autoEdit)) return false;
+    this.req("POST", `/permission/${p.id}/reply`, { reply: "once" }, {}, tab.directory).catch(() => undefined);
+    return true;
   }
 
   private rulesKey(sessionID: string, agent: string) {
@@ -598,7 +616,7 @@ export class ChatController implements vscode.Disposable {
       this.req<any[]>("GET", "/question").catch(() => []),
     ]);
     const mine = (sid: string) => sid === id || tab.children.has(sid);
-    for (const p of perms) if (mine(p.sessionID) && !this.rejectIfDenied(tab, p)) this.post({ type: "event", event: { type: "permission.asked", properties: p } });
+    for (const p of perms) if (mine(p.sessionID) && !this.settleItself(tab, p)) this.post({ type: "event", event: { type: "permission.asked", properties: p } });
     for (const q of questions) if (mine(q.sessionID)) this.post({ type: "event", event: { type: "question.asked", properties: q } });
     // Rules follow the agent of the latest prompt, which may still be running.
     const last = messages.findLast((m: any) => m.info.role === "user")?.info.agent;
@@ -1081,7 +1099,7 @@ export class ChatController implements vscode.Disposable {
         this.sendTabs();
       }
     }
-    if (isMain && e.type === "permission.asked" && this.rejectIfDenied(tab, p)) return;
+    if (isMain && e.type === "permission.asked" && this.settleItself(tab, p)) return;
     if ((e.type === "permission.asked" || e.type === "question.asked") && p.id && !tab.pending.has(p.id)) {
       tab.pending.add(p.id);
       this.sendTabs();

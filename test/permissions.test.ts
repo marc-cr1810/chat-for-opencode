@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deniedByAgent, evaluate, isReadOnlyAgent, Rule, sessionRules, wildcardMatch } from "../src/permissions";
+import { deniedByAgent, evaluate, isReadOnlyAgent, quietlyReadOnly, Rule, sessionRules, withoutQuietRedirects, wildcardMatch } from "../src/permissions";
 
 // The plan agent's rules as OpenCode 1.18 reports them (trimmed).
 const plan: Rule[] = [
@@ -85,8 +85,37 @@ describe("auto read-only", () => {
   });
 
   it("asks for read commands that write or run things", () => {
-    for (const cmd of ["cat a > b", "echo hi >> f", "ls 2>/dev/null", "find . -delete", "find . -exec rm {} ;", "fd x -x rm", "rg --pre ./evil foo", "sort -o out in", "git diff --output=x"])
+    for (const cmd of ["cat a > b", "echo hi >> f", "find . -delete", "find . -exec rm {} ;", "fd x -x rm", "rg --pre ./evil foo", "sort -o out in", "git diff --output=x"])
       expect(run(cmd), cmd).toBe("ask");
+  });
+
+  // OpenCode asks for these (the session rules ask on any `>`); the extension approves them itself.
+  it("approves read-only commands that only discard output or merge streams", () => {
+    expect(withoutQuietRedirects("ls x >/dev/null 2>&1")).toBe("ls x");
+    for (const cmd of ["ls src 2>/dev/null", "git log --oneline -5 2>&1", "ls x >/dev/null 2>&1", "pwd 2>/dev/null", "rg foo > /dev/null", "cat a.ts &>/dev/null"])
+      expect(quietlyReadOnly([cmd], plan, false), cmd).toBe(true);
+    expect(quietlyReadOnly(["ls src 2>/dev/null", "head -5 a.ts"], build, true)).toBe(true);
+  });
+
+  it("leaves it to you when a redirect writes a file, or the command isn't read-only", () => {
+    for (const cmd of ["cat a > b 2>/dev/null", "cat a > b 2>&1", "ls > out", "ls > out >/dev/null 2>&1", "rm x 2>/dev/null", "npm test 2>&1", "find . -delete 2>/dev/null", "sed -i s/a/b/ f 2>/dev/null"])
+      expect(quietlyReadOnly([cmd], plan, false), cmd).toBe(false);
+    expect(quietlyReadOnly(["ls 2>/dev/null", "npm test"], plan, false)).toBe(false);
+    expect(quietlyReadOnly([], plan, false)).toBe(false);
+  });
+
+  it("covers the other everyday read-only commands", () => {
+    for (const cmd of ["sed -n 1,40p src/chat.ts", "node --version", "go version", "env", "printenv PATH", "git rev-list --count HEAD", "test -f x", "xxd a.bin", "uniq -c", "git cat-file -p HEAD"])
+      expect(run(cmd), cmd).toBe("allow");
+    for (const cmd of ["sed -n '1w out' f", "sed --in-place s/a/b/ f", "env FOO=1 npm test", "xxd -r a b", "node script.js", "npx tsc --version"])
+      expect(run(cmd), cmd).toBe("ask");
+  });
+
+  it("works for build's auto mode too, keeping its own denies", () => {
+    expect(outcome(build, true, "bash", "git status", true)).toBe("allow");
+    expect(outcome(build, true, "bash", "npm test", true)).toBe("ask");
+    expect(outcome(build, true, "bash", "rm -rf /", true)).toBe("deny");
+    expect(outcome(build, true, "edit", "src/a.ts", true)).toBe("allow");
   });
 
   it("keeps the agent's own command denies", () => {
