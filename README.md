@@ -63,7 +63,8 @@ set are copied to the new names on first start.
 - `opencodeChat.binaryPath` – path to `opencode` (default: `opencode` on PATH)
 - `opencodeChat.autoApproveEdits` – apply edits and run read-only shell commands without asking (other shell commands always ask)
 - `opencodeChat.autoApproveReadOnly` – in plan (and other read-only agents), run read-only shell commands like `ls`, `grep` and `git log` without asking; redirects to files and write/exec flags still ask, while `2>/dev/null` and `2>&1` don't
-- `opencodeChat.model` – default `provider/model`
+- `opencodeChat.model` – default `provider/model`; changing it switches open panels to it
+- `opencodeChat.rememberLastModel` – start new panels on the model you last picked instead of the default (default on)
 - `opencodeChat.defaultAgent` – agent new conversations start in, e.g. `plan` (default: OpenCode's)
 - `opencodeChat.sendKey` – `enter` (default) or `ctrlEnter`, where Enter adds a new line
 - `opencodeChat.includeSelection` – share the current file and selection by default (default on)

@@ -208,7 +208,7 @@ const state = {
   retry: null,
   readOnlyAgents: ["plan"],
   models: [],
-  model: saved.model || null,
+  model: null,
   commands: [],
   session: null,
   messages: new Map(), // id -> { info, parts: Map }
@@ -234,7 +234,7 @@ const state = {
   error: null,
 };
 
-const persist = () => vscode.setState({ model: state.model, history: state.history.slice(-50) });
+const persist = () => vscode.setState({ history: state.history.slice(-50) });
 const send = (msg) => vscode.postMessage(msg);
 
 // ---------------------------------------------------------------------- dom
@@ -1619,7 +1619,7 @@ function acceptMenu() {
     }
   } else if (kind === "model") {
     state.model = { providerID: it.value.providerID, modelID: it.value.modelID };
-    persist();
+    send({ type: "pickModel", model: state.model });
     renderModelBtn();
     renderContext();
   }
@@ -2217,10 +2217,16 @@ window.addEventListener("message", (ev) => {
       state.models = msg.models;
       state.cwd = msg.cwd;
       state.commands = msg.commands;
-      if (!state.model || !state.models.some((m) => m.providerID === state.model.providerID && m.modelID === state.model.modelID)) state.model = msg.defaultModel || null;
+      // The extension decides the starting model (last used, opencodeChat.model or OpenCode's default).
+      state.model = msg.defaultModel || null;
       renderModeBtn();
       renderModelBtn();
       queueRender();
+      break;
+    case "setModel":
+      state.model = msg.model;
+      renderModelBtn();
+      renderContext();
       break;
     case "serverStatus":
       state.serverStatus = msg.status;

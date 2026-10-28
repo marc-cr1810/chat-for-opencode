@@ -75,6 +75,10 @@ interface CommandMeta {
 }
 
 const COMMANDS_KEY = "opencode.commandMessages";
+/** The model last picked in any panel, for opencodeChat.rememberLastModel. */
+const LAST_MODEL_KEY = "opencode.lastModel";
+
+type ModelRef = { providerID: string; modelID: string };
 
 let tabCounter = 0;
 /** Shared across controllers so one event shown in two views notifies only once. */
@@ -96,6 +100,10 @@ export class ChatController implements vscode.Disposable {
   /** Each agent's own permission rules, from /agent. */
   private agentRules = new Map<string, Rule[]>();
   private model: string | undefined;
+  /** Models OpenCode offers, from the last init. */
+  private models: ModelRef[] = [];
+  /** The model picked in this panel, kept so a reloaded webview comes back on it. */
+  private pickedModel: ModelRef | undefined;
   private disposables: vscode.Disposable[] = [];
   private selectionTimer: NodeJS.Timeout | undefined;
   private diffTimer: NodeJS.Timeout | undefined;
@@ -125,7 +133,11 @@ export class ChatController implements vscode.Disposable {
       server.onStatus((s) => this.post({ type: "serverStatus", status: s })),
       vscode.window.onDidChangeTextEditorSelection(() => this.queueSelection()),
       vscode.window.onDidChangeActiveTextEditor(() => this.queueSelection()),
-      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration("opencodeChat") && this.sendSettings()),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (!e.affectsConfiguration("opencodeChat")) return;
+        this.sendSettings();
+        if (e.affectsConfiguration("opencodeChat.model")) this.applyConfiguredModel();
+      }),
     );
   }
 
@@ -349,6 +361,53 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * The model a panel starts on: what it last had picked, else the model last used anywhere
+   * (unless opencodeChat.rememberLastModel is off), else opencodeChat.model, else OpenCode's own default.
+   */
+  private async startingModel(providerDefaults: Record<string, string> | undefined): Promise<ModelRef | undefined> {
+    const cfg = vscode.workspace.getConfiguration("opencodeChat");
+    const known = (m: ModelRef | undefined) => (m && this.findModel(m) ? m : undefined);
+    const remembered = cfg.get<boolean>("rememberLastModel", true) ? this.host.memento.get<ModelRef>(LAST_MODEL_KEY) : undefined;
+    const picked = known(this.pickedModel) ?? known(remembered) ?? this.parseModel(cfg.get<string>("model"));
+    if (picked) return picked;
+    const fromConfig = this.parseModel((await this.server.request<any>("GET", "/config")).model);
+    if (fromConfig) return fromConfig;
+    const entry = Object.entries(providerDefaults ?? {})[0];
+    return entry ? { providerID: entry[0], modelID: entry[1] } : undefined;
+  }
+
+  /** "provider/model", or a bare model ID if exactly one provider offers it. */
+  private parseModel(value: string | undefined): ModelRef | undefined {
+    value = value?.trim();
+    if (!value) return undefined;
+    const slash = value.indexOf("/");
+    if (slash > 0) return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) };
+    const matches = this.models.filter((m) => m.modelID === value);
+    return matches.length === 1 ? { providerID: matches[0].providerID, modelID: matches[0].modelID } : undefined;
+  }
+
+  private findModel(m: ModelRef) {
+    return this.models.find((x) => x.providerID === m.providerID && x.modelID === m.modelID);
+  }
+
+  private async rememberModel(model: ModelRef | undefined) {
+    this.pickedModel = model ? { providerID: model.providerID, modelID: model.modelID } : undefined;
+    if (this.pickedModel) await this.host.memento.update(LAST_MODEL_KEY, this.pickedModel);
+  }
+
+  /** opencodeChat.model was just changed: switch this panel to it now rather than at the next start. */
+  private applyConfiguredModel() {
+    const model = this.parseModel(vscode.workspace.getConfiguration("opencodeChat").get<string>("model"));
+    if (!model) return;
+    if (!this.findModel(model)) {
+      void vscode.window.showWarningMessage(`OpenCode has no model ${model.providerID}/${model.modelID}; check opencodeChat.model.`);
+      return;
+    }
+    void this.rememberModel(model);
+    this.post({ type: "setModel", model });
+  }
+
+  /**
    * Absolute path in the active tab's directory. Relative paths (mentions, file references, diffs)
    * deliberately resolve against the active tree, so in a worktree tab they point at the worktree's
    * copy of the file, which is the one the agent is working on.
@@ -377,6 +436,8 @@ export class ChatController implements vscode.Disposable {
         this.model = msg.model;
         this.reportStatus();
         return;
+      case "pickModel":
+        return this.rememberModel(msg.model);
       case "newSession":
         return this.newSession();
       case "switchTab":
@@ -497,16 +558,8 @@ export class ChatController implements vscode.Disposable {
         });
       }
     }
-    let defaultModel: { providerID: string; modelID: string } | undefined;
-    const configured = vscode.workspace.getConfiguration("opencodeChat").get<string>("model");
-    const cfgModel = configured || (await this.server.request<any>("GET", "/config")).model;
-    if (cfgModel && cfgModel.includes("/")) {
-      const [providerID, ...rest] = cfgModel.split("/");
-      defaultModel = { providerID, modelID: rest.join("/") };
-    } else {
-      const entry = Object.entries<string>(providers.default ?? {})[0];
-      if (entry) defaultModel = { providerID: entry[0], modelID: entry[1] };
-    }
+    this.models = models;
+    const defaultModel = await this.startingModel(providers.default);
     this.post({
       type: "init",
       autoEdit: this.autoEdit,

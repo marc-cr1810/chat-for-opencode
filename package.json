@@ -168,7 +168,12 @@
         "opencodeChat.model": {
           "type": "string",
           "default": "",
-          "description": "Default model as provider/model (e.g. opencode/big-pickle). Empty uses OpenCode's default."
+          "description": "Default model as provider/model (e.g. opencode/big-pickle). Empty uses OpenCode's default. Changing it switches open panels to it. With Remember Last Model on, it only applies until you pick another model."
+        },
+        "opencodeChat.rememberLastModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start new panels on the model you last picked instead of the default model."
         },
         "opencodeChat.preferredLocation": {
           "type": "string",
