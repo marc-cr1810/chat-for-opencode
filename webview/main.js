@@ -209,6 +209,8 @@ const state = {
   readOnlyAgents: ["plan"],
   models: [],
   model: null,
+  /** Agents an @mention hands work to: [{ name, description }]. */
+  subagents: [],
   /** The picked model's reasoning variant, or null for the model's default. */
   variant: null,
   /** The effort last picked by hand, carried to models that have no level remembered. */
@@ -388,7 +390,7 @@ function renderEmpty() {
       : h(
           "div",
           { class: "empty-tips" },
-          tip(icons.at, "Mention files with @, or press Ctrl+Alt+K in the editor"),
+          tip(icons.at, "@ mentions files, code and agents like @explore; Ctrl+Alt+K adds the editor selection"),
           tip(icons.slash, "Type / for commands"),
           tip(icons.bot, "Tab switches agent (build / plan)"),
         ),
@@ -1666,15 +1668,38 @@ function drawMenu() {
   if (menu.kind === "model" && modelVariants().length) menuEl.append(effortRow());
   menuEl.querySelector(".active")?.scrollIntoView({ block: "nearest" });
 }
+/**
+ * A path as it goes after @. A bare name like `explore` (no dot or slash) wouldn't read as a file, and
+ * could be taken for an agent, so it becomes `./explore`.
+ */
+function mentionPath(p) {
+  return /[./]/.test(p) ? p : `./${p}`;
+}
+
+/** @ menu entries for the subagents whose name matches what's been typed. */
+function agentItems(query) {
+  const q = query.toLowerCase();
+  return state.subagents
+    .filter((a) => a.name.toLowerCase().startsWith(q))
+    .map((a) => ({ type: "agent", label: a.name, detail: a.description ? `agent · ${a.description}` : "agent", value: a.name, icon: icons.bot }));
+}
+
 function acceptMenu() {
   const it = menu.items[menu.index];
   const kind = menu.kind;
   const start = menu.start;
   closeMenu();
-  if (kind === "file") {
+  if (kind === "file" && it.type === "symbol") {
+    // The extension looks up the symbol's whole definition and inserts it as @file#Lstart-end.
     const caret = input.selectionStart;
-    input.value = input.value.slice(0, start) + "@" + it.value + " " + input.value.slice(caret);
-    const pos = start + it.value.length + 2;
+    input.value = input.value.slice(0, start) + input.value.slice(caret);
+    input.setSelectionRange(start, start);
+    send({ type: "pickSymbol", symbol: it.value });
+  } else if (kind === "file") {
+    const caret = input.selectionStart;
+    const value = it.type === "agent" ? it.value : mentionPath(it.value);
+    input.value = input.value.slice(0, start) + "@" + value + " " + input.value.slice(caret);
+    const pos = start + value.length + 2;
     input.setSelectionRange(pos, pos);
   } else if (kind === "command") {
     if (it.builtin) {
@@ -1704,8 +1729,10 @@ function updateMenuFromInput() {
   if (at) {
     const start = caret - at[2].length - 1;
     fileQuery = at[2];
-    if (!menu || menu.kind !== "file") openMenu("file", [], start);
-    else menu.start = start;
+    // Subagents show at once; files and symbols follow when the search comes back.
+    const agents = agentItems(at[2]);
+    if (!menu || menu.kind !== "file") openMenu("file", agents, start);
+    else (menu.start = start), (menu.items = [...agents, ...menu.items.filter((i) => i.type !== "agent")]), (menu.index = 0), drawMenu();
     // Debounce: searching on every keystroke floods the server.
     clearTimeout(fileSearchTimer);
     const query = at[2];
@@ -2458,6 +2485,7 @@ window.addEventListener("message", (ev) => {
       state.readOnlyAgents = msg.readOnlyAgents || ["plan"];
       state.agents = msg.agents.length ? msg.agents : ["build"];
       state.agentColors = msg.agentColors || {};
+      state.subagents = msg.subagents || [];
       if (!state.agents.includes(state.agent)) state.agent = state.agents[0];
       state.models = msg.models;
       state.cwd = msg.cwd;
@@ -2536,7 +2564,17 @@ window.addEventListener("message", (ev) => {
       break;
     case "fileResults":
       if (menu?.kind === "file" && msg.query === fileQuery) {
-        menu.items = msg.files.map((f) => ({ label: f.split("/").pop() || f, detail: f, value: f, icon: f.endsWith("/") ? icons.folder : icons.file }));
+        menu.items = [
+          ...agentItems(msg.query),
+          ...msg.files.map((f) => ({ type: "file", label: f.split("/").pop() || f, detail: f, value: f, icon: f.endsWith("/") ? icons.folder : icons.file })),
+          ...(msg.symbols || []).map((sym) => ({
+            type: "symbol",
+            label: sym.container ? `${sym.container}.${sym.name}` : sym.name,
+            detail: `${sym.kind.toLowerCase()} · ${sym.path}:${sym.line}`,
+            value: sym,
+            icon: icons.code,
+          })),
+        ];
         menu.index = 0;
         drawMenu();
       }
@@ -2547,7 +2585,7 @@ window.addEventListener("message", (ev) => {
       break;
     case "insertMention": {
       const m = msg.mention;
-      const token = `@${m.path}${m.startLine ? `#L${m.startLine}${m.endLine && m.endLine !== m.startLine ? `-${m.endLine}` : ""}` : ""} `;
+      const token = `@${mentionPath(m.path)}${m.startLine ? `#L${m.startLine}${m.endLine && m.endLine !== m.startLine ? `-${m.endLine}` : ""}` : ""} `;
       const pos = input.selectionStart ?? input.value.length;
       const pre = input.value.slice(0, pos);
       const ins = (pre && !/\s$/.test(pre) ? " " : "") + token;

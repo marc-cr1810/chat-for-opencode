@@ -193,3 +193,51 @@ test.describe("drag and drop", () => {
     await expect(page.locator("#attachments img")).toHaveCount(1);
   });
 });
+
+test.describe("@ mentions", () => {
+  test("subagents show as soon as @ is typed, and picking one inserts @name", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#input").click();
+    await page.keyboard.type("@");
+    await expect(page.locator("#menu .menu-item").first()).toContainText("explore");
+    await page.keyboard.type("gen");
+    await expect(page.locator("#menu .menu-item").first()).toContainText("general");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#input")).toHaveValue("@general ");
+  });
+
+  test("a file with a bare name like the explore agent's is inserted as @./explore, and sent as a file", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#input").click();
+    await page.keyboard.type("Run @expl");
+    const items = page.locator("#menu .menu-item");
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toContainText("agent");
+    await items.nth(1).click();
+    await expect(page.locator("#input")).toHaveValue("Run @./explore ");
+    await page.keyboard.press("Enter");
+    expect(await sent(page, "send")).toEqual([expect.objectContaining({ mentions: [{ path: "./explore" }] })]);
+  });
+
+  test("the extension's line-range mention for a bare file name gets the ./ too", async ({ page }) => {
+    await open(page, "empty");
+    await page.evaluate(() => (window as any).harness.post({ type: "insertMention", mention: { path: "explore", startLine: 3, endLine: 9 } }));
+    await expect(page.locator("#input")).toHaveValue("@./explore#L3-9 ");
+  });
+
+  test("symbols follow files, and picking one asks the extension for its range", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#input").click();
+    await page.keyboard.type("Look at @start");
+    const symbol = page.locator("#menu .menu-item", { hasText: "OpencodeServer.start" });
+    await expect(symbol).toContainText("method · src/server.ts:48");
+    await symbol.click();
+    await expect(page.locator("#input")).toHaveValue("Look at ");
+    expect(await sent(page, "pickSymbol")).toEqual([
+      { type: "pickSymbol", symbol: { name: "start", kind: "Method", container: "OpencodeServer", path: "src/server.ts", line: 48 } },
+    ]);
+    // The extension answers with the definition's lines.
+    await page.evaluate(() => (window as any).harness.post({ type: "insertMention", mention: { path: "src/server.ts", startLine: 48, endLine: 90 } }));
+    await expect(page.locator("#input")).toHaveValue("Look at @src/server.ts#L48-90 ");
+  });
+});

@@ -7,6 +7,7 @@ import { collectTurns, cumulativeChange, FileChange, unapply } from "./patches";
 import { deniedByAgent, isReadOnlyAgent, quietlyReadOnly, Rule, sessionRules } from "./permissions";
 import { OpencodeServer, OpencodeEvent } from "./server";
 import { DiffContentProvider } from "./diffProvider";
+import { agentParts } from "./mentions";
 
 const exec = promisify(execFile);
 
@@ -113,6 +114,8 @@ export class ChatController implements vscode.Disposable {
   private agent = "build";
   /** Each agent's own permission rules, from /agent. */
   private agentRules = new Map<string, Rule[]>();
+  /** Agents a prompt can hand work to with an @mention (explore, general and custom subagents). */
+  private subagents = new Set<string>();
   private model: string | undefined;
   /** Models OpenCode offers, from the last init. */
   private models: (ModelRef & { variants: string[] })[] = [];
@@ -530,10 +533,12 @@ export class ChatController implements vscode.Disposable {
         this.resolvePending(msg.id);
         return;
       case "searchFiles": {
-        const results = await this.searchFiles(msg.query);
-        this.post({ type: "fileResults", query: msg.query, files: results });
+        const [results, symbols] = await Promise.all([this.searchFiles(msg.query), this.searchSymbols(msg.query)]);
+        this.post({ type: "fileResults", query: msg.query, files: results, symbols });
         return;
       }
+      case "pickSymbol":
+        return this.insertMention(await this.symbolMention(msg.symbol));
       case "openFile":
         return this.openFile(msg.path, msg.line);
       case "openExternal":
@@ -629,6 +634,8 @@ export class ChatController implements vscode.Disposable {
       this.server.request<any[]>("GET", "/command"),
     ]);
     this.agentRules = new Map(agents.map((a) => [a.name, a.permission ?? []]));
+    const subagents = agents.filter((a) => a.mode !== "primary" && !a.hidden);
+    this.subagents = new Set(subagents.map((a) => a.name));
     const models: { providerID: string; providerName: string; modelID: string; name: string; context?: number; variants: string[] }[] = [];
     for (const p of providers.providers ?? []) {
       for (const [id, m] of Object.entries<any>(p.models ?? {})) {
@@ -653,6 +660,7 @@ export class ChatController implements vscode.Disposable {
       defaultModel,
       variantByModel: this.host.memento.get<Record<string, string | null>>(VARIANTS_KEY, {}),
       agents: agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name),
+      subagents: subagents.map((a) => ({ name: a.name, description: a.description ?? "" })),
       agentColors: Object.fromEntries(agents.filter((a) => a.color).map((a) => [a.name, a.color])),
       commands: commands.map((c) => ({ name: c.name, description: c.description ?? "" })),
       cwd: this.server.directory,
@@ -913,7 +921,7 @@ export class ChatController implements vscode.Disposable {
       }
     }
 
-    const parts: any[] = [{ type: "text", text }];
+    const parts: any[] = [{ type: "text", text }, ...agentParts(text, this.subagents)];
     if (selectionPart) parts.push(selectionPart);
     parts.push(...fileParts);
 
@@ -1157,6 +1165,52 @@ export class ChatController implements vscode.Disposable {
       }
     }
     return out.slice(0, 30);
+  }
+
+  /**
+   * Code symbols for the @ menu, from VS Code's own language servers (OpenCode's symbol search
+   * only works once it has started one itself).
+   */
+  private async searchSymbols(query: string) {
+    if (query.length < 2 || /[/\\]/.test(query)) return [];
+    const found = await vscode.commands
+      .executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query)
+      .then((r) => r ?? [], () => []);
+    return found
+      .filter((s) => s.location.uri.scheme === "file" && !s.location.uri.fsPath.includes(`${path.sep}node_modules${path.sep}`))
+      .slice(0, 8)
+      .map((s) => ({
+        name: s.name,
+        kind: vscode.SymbolKind[s.kind],
+        container: s.containerName || undefined,
+        path: this.relative(s.location.uri.fsPath),
+        line: s.location.range.start.line + 1,
+      }));
+  }
+
+  /**
+   * The mention for a picked symbol: its whole definition, from the file's outline. Workspace
+   * search often gives only the name's position, so without the outline it's just that line.
+   */
+  private async symbolMention(sym: { path: string; line: number; name: string }): Promise<Mention> {
+    const uri = vscode.Uri.file(this.absolute(sym.path));
+    const outline = await vscode.commands
+      .executeCommand<vscode.DocumentSymbol[]>("vscode.executeDocumentSymbolProvider", uri)
+      .then((r) => r ?? [], () => []);
+    const line = sym.line - 1;
+    let best: vscode.DocumentSymbol | undefined;
+    const walk = (list: vscode.DocumentSymbol[]) => {
+      for (const d of list) {
+        // DocumentSymbol has a range; an old-style SymbolInformation result doesn't, so skip those.
+        if (!d.range) continue;
+        if (d.name === sym.name && d.range.start.line <= line && line <= d.range.end.line) best = d;
+        if (d.range.start.line <= line && line <= d.range.end.line) walk(d.children ?? []);
+      }
+    };
+    walk(outline);
+    const start = best ? best.range.start.line + 1 : sym.line;
+    const end = best ? best.range.end.line + 1 : sym.line;
+    return { path: sym.path, startLine: start, endLine: end };
   }
 
   private queueDiff() {

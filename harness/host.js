@@ -56,7 +56,18 @@ function onMessage(msg) {
       // A subagent session's steps and text, from the scene's `children`.
       return post({ type: "childParts", sessionID: msg.sessionID, parts: scene.children?.[msg.sessionID] ?? [] });
     case "searchFiles":
-      return post({ type: "fileResults", query: msg.query, files: ["src/chat.ts", "src/server.ts", "webview/main.js"].filter((f) => f.includes(msg.query)) });
+      return post({
+        type: "fileResults",
+        query: msg.query,
+        files: ["src/chat.ts", "src/server.ts", "webview/main.js", "explore"].filter((f) => f.includes(msg.query)),
+        symbols:
+          msg.query.length < 2
+            ? []
+            : [
+                { name: "start", kind: "Method", container: "OpencodeServer", path: "src/server.ts", line: 48 },
+                { name: "startingModel", kind: "Method", container: "ChatController", path: "src/chat.ts", line: 398 },
+              ].filter((s) => s.name.startsWith(msg.query)),
+      });
   }
 }
 window.acquireVsCodeApi = () => ({ postMessage: onMessage, getState: () => null, setState() {} });
@@ -69,6 +80,10 @@ function load() {
     models,
     defaultModel: { providerID: "opencode", modelID: "big-pickle" },
     agents: ["build", "plan"],
+    subagents: [
+      { name: "explore", description: "Fast agent specialized for exploring codebases" },
+      { name: "general", description: "General-purpose agent for multi-step tasks" },
+    ],
     readOnlyAgents: ["plan"],
     autoEdit: false,
     autoRead: false,
