@@ -12,6 +12,78 @@ test.describe("composer", () => {
     await expect(page.locator("#input")).toHaveValue("");
   });
 
+  test("effort: Default sits apart from the levels, and the pick goes with the prompt", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#modelBtn").click();
+    const effort = page.locator(".effort-row");
+    await expect(effort).toContainText("Effort (Default)");
+    await expect(effort.locator(".effort-chip.on")).toHaveText("Default");
+    await expect(effort.locator(".effort-dot")).toHaveCount(3);
+    await expect(effort.locator(".effort-dot.on")).toHaveCount(0);
+    await effort.locator('.effort-dot[title="high"]').click();
+    await expect(effort).toContainText("(high)");
+    await expect(page.locator("#menu")).toBeVisible();
+    await expect(page.locator("#modelBtn")).toContainText("high");
+    expect(await sent(page, "pickVariant")).toEqual([expect.objectContaining({ variant: "high" })]);
+    await page.locator("#modelBtn").click();
+    await page.locator("#input").fill("Think hard");
+    await page.locator("#input").press("Enter");
+    expect(await sent(page, "send")).toEqual([expect.objectContaining({ variant: "high" })]);
+  });
+
+  test("effort: levels go lowest first, and ←/→ step through them from Default", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#modelBtn").click();
+    await page.locator(".menu-item", { hasText: "Flint 40B" }).click();
+    await page.locator("#input").fill("/model");
+    await page.keyboard.press("Enter");
+    const titles = await page.locator(".effort-dot").evaluateAll((els) => els.map((e) => e.getAttribute("title")));
+    expect(titles).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator(".effort-row")).toContainText("(low)");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator(".effort-row")).toContainText("(Default)");
+  });
+
+  test("effort: switching models rounds a missing level down, says so, and remembers each model's own", async ({ page }) => {
+    await open(page, "empty");
+    const pick = async (name: string) => {
+      await page.locator("#modelBtn").click();
+      await page.locator(".menu-item", { hasText: name }).click();
+    };
+    await pick("Flint 40B");
+    await page.locator("#modelBtn").click();
+    await page.locator('.effort-dot[title="medium"]').click();
+    await page.locator("#modelBtn").click();
+
+    await pick("Big Pickle");
+    await expect(page.locator("#modelBtn")).toContainText("low");
+    await expect(page.locator(".toast.show")).toHaveText("Big Pickle has no medium effort — using low.");
+
+    await pick("Flint 40B");
+    await expect(page.locator("#modelBtn")).toContainText("medium");
+
+    await pick("Qwen 3.8 27B");
+    await page.locator("#modelBtn").click();
+    await expect(page.locator(".effort-row")).toHaveCount(0);
+    await page.locator("#modelBtn").click();
+    await page.locator("#input").fill("Again");
+    await page.locator("#input").press("Enter");
+    expect((await sent(page, "send"))[0].variant).toBeUndefined();
+  });
+
+  test("effort: variants that aren't known levels are plain choices, and a level can't carry onto them", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#modelBtn").click();
+    await page.locator('.effort-dot[title="high"]').click();
+    await page.locator(".menu-item", { hasText: "Tuned 7B" }).click();
+    await expect(page.locator(".toast.show")).toHaveText("Tuned 7B has no high effort — using Default.");
+    await page.locator("#modelBtn").click();
+    await expect(page.locator(".effort-track")).toHaveCount(0);
+    await expect(page.locator(".effort-chip")).toHaveText(["Default", "fast", "thinking"]);
+  });
+
   test("with sendKey ctrlEnter, Enter adds a line and Ctrl+Enter sends", async ({ page }) => {
     await open(page, "empty", { settings: { sendKey: "ctrlEnter" } });
     const input = page.locator("#input");

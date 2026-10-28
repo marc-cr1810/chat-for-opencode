@@ -22,6 +22,8 @@ interface SendRequest {
   images: { dataUrl: string; mime: string; name: string }[];
   includeSelection: boolean;
   model?: { providerID: string; modelID: string };
+  /** The model's reasoning variant (low / high / max …); none means the model's default. */
+  variant?: string;
   agent: string;
   autoEdit: boolean;
 }
@@ -77,8 +79,10 @@ interface CommandMeta {
 const COMMANDS_KEY = "opencode.commandMessages";
 /** The model last picked in any panel, for opencodeChat.rememberLastModel. */
 const LAST_MODEL_KEY = "opencode.lastModel";
+/** "provider/model" -> the reasoning effort last picked for that model (null: the model's default). */
+const VARIANTS_KEY = "opencode.modelVariants";
 
-type ModelRef = { providerID: string; modelID: string };
+type ModelRef = { providerID: string; modelID: string; variant?: string };
 
 let tabCounter = 0;
 /** Shared across controllers so one event shown in two views notifies only once. */
@@ -101,7 +105,7 @@ export class ChatController implements vscode.Disposable {
   private agentRules = new Map<string, Rule[]>();
   private model: string | undefined;
   /** Models OpenCode offers, from the last init. */
-  private models: ModelRef[] = [];
+  private models: (ModelRef & { variants: string[] })[] = [];
   /** The model picked in this panel, kept so a reloaded webview comes back on it. */
   private pickedModel: ModelRef | undefined;
   private disposables: vscode.Disposable[] = [];
@@ -184,7 +188,9 @@ export class ChatController implements vscode.Disposable {
     if (tab === this.tab) this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
     const agent = user.info.agent ?? this.agent;
     await this.applyRules(tab, agent);
-    await this.req("POST", `/session/${sid}/prompt_async`, { parts, agent, model: user.info.model }, {}, tab.directory);
+    // A stored model can carry its variant, which the prompt takes separately.
+    const { variant, ...model } = user.info.model ?? {};
+    await this.req("POST", `/session/${sid}/prompt_async`, { parts, agent, model: user.info.model && model, variant }, {}, tab.directory);
   }
 
   // -------------------------------------------------------------------- tabs
@@ -375,7 +381,12 @@ export class ChatController implements vscode.Disposable {
    */
   private async startingModel(providerDefaults: Record<string, string> | undefined): Promise<ModelRef | undefined> {
     const cfg = vscode.workspace.getConfiguration("opencodeChat");
-    const known = (m: ModelRef | undefined) => (m && this.findModel(m) ? m : undefined);
+    const known = (m: ModelRef | undefined) => {
+      const found = m && this.findModel(m);
+      if (!found) return undefined;
+      // Drop a remembered variant the model no longer offers.
+      return m.variant && !found.variants.includes(m.variant) ? { providerID: m.providerID, modelID: m.modelID } : m;
+    };
     const remembered = cfg.get<boolean>("rememberLastModel", true) ? this.host.memento.get<ModelRef>(LAST_MODEL_KEY) : undefined;
     const picked = known(this.pickedModel) ?? known(remembered) ?? this.parseModel(cfg.get<string>("model"));
     if (picked) return picked;
@@ -400,7 +411,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async rememberModel(model: ModelRef | undefined) {
-    this.pickedModel = model ? { providerID: model.providerID, modelID: model.modelID } : undefined;
+    this.pickedModel = model ? { providerID: model.providerID, modelID: model.modelID, variant: model.variant || undefined } : undefined;
     if (this.pickedModel) await this.host.memento.update(LAST_MODEL_KEY, this.pickedModel);
   }
 
@@ -450,7 +461,13 @@ export class ChatController implements vscode.Disposable {
         this.reportStatus();
         return;
       case "pickModel":
-        return this.rememberModel(msg.model);
+        return this.rememberModel(msg.model && { ...msg.model, variant: msg.variant });
+      case "pickVariant": {
+        if (!msg.model) return;
+        const byModel = this.host.memento.get<Record<string, string | null>>(VARIANTS_KEY, {});
+        await this.host.memento.update(VARIANTS_KEY, { ...byModel, [`${msg.model.providerID}/${msg.model.modelID}`]: msg.variant ?? null });
+        return this.rememberModel({ ...msg.model, variant: msg.variant });
+      }
       case "newSession":
         return this.newSession();
       case "switchTab":
@@ -595,7 +612,7 @@ export class ChatController implements vscode.Disposable {
       this.server.request<any[]>("GET", "/command"),
     ]);
     this.agentRules = new Map(agents.map((a) => [a.name, a.permission ?? []]));
-    const models: { providerID: string; providerName: string; modelID: string; name: string; context?: number }[] = [];
+    const models: { providerID: string; providerName: string; modelID: string; name: string; context?: number; variants: string[] }[] = [];
     for (const p of providers.providers ?? []) {
       for (const [id, m] of Object.entries<any>(p.models ?? {})) {
         models.push({
@@ -604,6 +621,7 @@ export class ChatController implements vscode.Disposable {
           modelID: id,
           name: m.name ?? id,
           context: m.limit?.context || undefined,
+          variants: Object.entries<any>(m.variants ?? {}).filter(([, v]) => !v?.disabled).map(([name]) => name),
         });
       }
     }
@@ -616,6 +634,7 @@ export class ChatController implements vscode.Disposable {
       readOnlyAgents: agents.filter((a) => isReadOnlyAgent(a.permission ?? [])).map((a) => a.name),
       models,
       defaultModel,
+      variantByModel: this.host.memento.get<Record<string, string | null>>(VARIANTS_KEY, {}),
       agents: agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name),
       agentColors: Object.fromEntries(agents.filter((a) => a.color).map((a) => [a.name, a.color])),
       commands: commands.map((c) => ({ name: c.name, description: c.description ?? "" })),
@@ -786,6 +805,7 @@ export class ChatController implements vscode.Disposable {
           arguments: slash[2] ?? "",
           agent,
           model: req.model ? `${req.model.providerID}/${req.model.modelID}` : undefined,
+          variant: req.variant,
           parts: fileParts.filter((p) => !p.url.startsWith("data:")),
         }, {}, dir);
         return;
@@ -797,7 +817,7 @@ export class ChatController implements vscode.Disposable {
     parts.push(...fileParts);
 
     await this.applyRules(tab, agent);
-    await this.req("POST", `/session/${sessionID}/prompt_async`, { parts, agent, model: req.model }, {}, dir);
+    await this.req("POST", `/session/${sessionID}/prompt_async`, { parts, agent, model: req.model, variant: req.variant }, {}, dir);
   }
 
   private async revert(messageID: string) {

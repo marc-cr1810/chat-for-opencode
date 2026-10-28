@@ -431,6 +431,27 @@ body.vscode-light, body.vscode-high-contrast-light {
 .sel-pill { min-width: 0; flex-shrink: 2; }
 .sel-pill.off { opacity: 0.6; text-decoration: line-through; }
 .model-pill { max-width: 160px; }
+.model-variant { color: var(--muted); margin-left: 4px; flex-shrink: 0; }
+/* Pinned to the bottom of the scrolling model list. */
+.effort-row {
+  position: sticky; bottom: -4px; display: flex; align-items: center; gap: 8px; margin: 4px -4px -4px; padding: 7px 12px;
+  border-top: 1px solid var(--border); background: inherit; background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+}
+.effort-row .menu-detail { margin-left: 0; padding-left: 0; font-size: inherit; }
+.effort-choices { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; }
+.effort-chip {
+  padding: 1px 7px; border-radius: 999px; font-size: 0.9em; color: var(--muted); background: none; border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+}
+.effort-chip:hover { color: var(--fg); }
+.effort-chip.on { color: var(--fg); border-color: var(--border); background: var(--hover); }
+/* A fixed width, so the control doesn't change size between models; the dots spread out evenly across it. */
+.effort-track { display: inline-flex; align-items: center; justify-content: space-between; width: 112px; padding: 4px 10px; border-radius: 999px; background: var(--hover); }
+.effort-track.unset { opacity: 0.6; }
+/* Every dot gets the same 12px slot, so the spacing stays even wherever the knob is. */
+.effort-dot { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; padding: 0; background: none; cursor: pointer; }
+.effort-dot::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--muted); opacity: 0.6; transition: all 0.12s; }
+.effort-dot:hover::before { opacity: 1; }
+.effort-dot.on::before { width: 12px; height: 12px; background: var(--fg); opacity: 1; }
 .send-btn {
   display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px;
   background: var(--accent); color: #1b1b1b;
@@ -524,4 +545,5 @@ body.vscode-light, body.vscode-high-contrast-light {
   background: var(--vscode-inputValidation-errorBackground, #5a1d1d); border: 1px solid var(--vscode-inputValidation-errorBorder, var(--err));
   color: var(--fg); opacity: 0; transform: translateY(8px); transition: all 0.15s; pointer-events: none; white-space: pre-wrap;
 }
+.toast.info { background: var(--vscode-inputValidation-infoBackground, #063b49); border-color: var(--vscode-inputValidation-infoBorder, #1a85ff); }
 .toast.show { opacity: 1; transform: none; pointer-events: auto; }

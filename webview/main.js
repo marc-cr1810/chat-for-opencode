@@ -209,6 +209,12 @@ const state = {
   readOnlyAgents: ["plan"],
   models: [],
   model: null,
+  /** The picked model's reasoning variant, or null for the model's default. */
+  variant: null,
+  /** The effort last picked by hand, carried to models that have no level remembered. */
+  lastVariant: null,
+  /** "provider/model" -> the effort last picked for that model (null: Default). */
+  variantByModel: {},
   commands: [],
   session: null,
   messages: new Map(), // id -> { info, parts: Map }
@@ -1210,16 +1216,69 @@ function renderModeBtn() {
   edits.title = on ? onTitle : offTitle;
 }
 
+function currentModel() {
+  return state.models.find((x) => state.model && x.providerID === state.model.providerID && x.modelID === state.model.modelID);
+}
+
+/** Effort levels OpenCode's providers use, lowest first. */
+const EFFORT_SCALE = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Whether every one of these variants is a known effort level, so they can be put in order. */
+function isRanked(variants) {
+  return variants.every((v) => EFFORT_SCALE.includes(v));
+}
+
+/** Variants the picked model offers, lowest effort first when they're all known levels; empty hides the picker. */
+function modelVariants(m = currentModel()) {
+  const variants = m?.variants || [];
+  return isRanked(variants) ? [...variants].sort((a, b) => EFFORT_SCALE.indexOf(a) - EFFORT_SCALE.indexOf(b)) : variants;
+}
+
+const modelKey = (m) => (m ? `${m.providerID}/${m.modelID}` : "");
+
+/**
+ * The level to use on a model that has no `from` level: the same name if it has it, else the
+ * nearest one below (so a switch never quietly raises the effort), else its lowest.
+ * Variants that aren't known levels can't be compared, so those fall back to Default.
+ */
+function carryVariant(from, offered) {
+  if (!from || offered.includes(from)) return from;
+  if (!isRanked(offered) || !EFFORT_SCALE.includes(from)) return null;
+  const rank = EFFORT_SCALE.indexOf(from);
+  return offered.filter((v) => EFFORT_SCALE.indexOf(v) <= rank).pop() ?? offered[0];
+}
+
+/**
+ * Switch model. Its effort is the one last picked for it, else the last one picked anywhere,
+ * carried over by carryVariant. With `announce`, a level that had to change says so.
+ */
+function setModel(model, announce = false) {
+  state.model = model ? { providerID: model.providerID, modelID: model.modelID } : null;
+  const offered = modelVariants();
+  const key = modelKey(state.model);
+  const remembered = state.variantByModel[key];
+  if (!offered.length) state.variant = null;
+  else if (key in state.variantByModel && (remembered === null || offered.includes(remembered))) state.variant = remembered;
+  else {
+    state.variant = carryVariant(state.lastVariant, offered);
+    if (announce && state.lastVariant && state.variant !== state.lastVariant) {
+      showToast(`${currentModel()?.name || state.model.modelID} has no ${state.lastVariant} effort — using ${state.variant || "Default"}.`, "info");
+    }
+  }
+}
+
 function renderModelBtn() {
-  const m = state.models.find((x) => state.model && x.providerID === state.model.providerID && x.modelID === state.model.modelID);
+  const m = currentModel();
   const name = m ? m.name : state.model ? state.model.modelID : "Default model";
-  $("modelBtn").innerHTML = `<span>${escapeHtml(name)}</span>${icons.chevronDown}`;
+  const variant = state.variant ? `<span class="model-variant">${escapeHtml(state.variant)}</span>` : "";
+  $("modelBtn").innerHTML = `<span>${escapeHtml(name)}</span>${variant}${icons.chevronDown}`;
   reportStatus();
 }
 
 function reportStatus() {
-  const m = state.models.find((x) => state.model && x.providerID === state.model.providerID && x.modelID === state.model.modelID);
-  send({ type: "status", agent: state.agent, model: m ? m.name : state.model?.modelID });
+  const m = currentModel();
+  const name = m ? m.name : state.model?.modelID;
+  send({ type: "status", agent: state.agent, model: name && state.variant ? `${name} · ${state.variant}` : name });
 }
 
 function renderSelBtn() {
@@ -1598,6 +1657,7 @@ function drawMenu() {
     });
     menuEl.append(row);
   });
+  if (menu.kind === "model" && modelVariants().length) menuEl.append(effortRow());
   menuEl.querySelector(".active")?.scrollIntoView({ block: "nearest" });
 }
 function acceptMenu() {
@@ -1619,8 +1679,8 @@ function acceptMenu() {
       input.setSelectionRange(input.value.length, input.value.length);
     }
   } else if (kind === "model") {
-    state.model = { providerID: it.value.providerID, modelID: it.value.modelID };
-    send({ type: "pickModel", model: state.model });
+    setModel(it.value, true);
+    send({ type: "pickModel", model: state.model, variant: state.variant || undefined });
     renderModelBtn();
     renderContext();
   }
@@ -1655,7 +1715,12 @@ function updateMenuFromInput() {
     openMenu("command", items, 0);
     return;
   }
-  if (menu && menu.kind !== "model") closeMenu();
+  if (menu && !isPickerMenu()) closeMenu();
+}
+
+/** The model menu opens from its footer button, not from typing. */
+function isPickerMenu() {
+  return menu?.kind === "model";
 }
 
 function openModelMenu() {
@@ -1663,6 +1728,55 @@ function openModelMenu() {
   openMenu("model", items, 0);
   menu.index = Math.max(0, items.findIndex((i) => i.icon));
   drawMenu();
+}
+
+/**
+ * The picked model's reasoning effort, pinned under the model list. Default sits apart from the
+ * levels, since it isn't one; known levels go on a fixed-width track, lowest first, and anything
+ * else is a plain row of choices, as there's no order to show. ←/→ step through them.
+ */
+function effortRow() {
+  const levels = modelVariants();
+  const ranked = isRanked(levels);
+  const choice = (v, cls, label) => {
+    const el = h("button", { class: `${cls} ${v === state.variant ? "on" : ""}`, title: v || "The model's own setting" }, label);
+    el.addEventListener("mousedown", (e) => e.preventDefault());
+    el.addEventListener("click", (e) => {
+      // Redrawing detaches the button, which would read as a click outside the menu.
+      e.stopPropagation();
+      pickVariant(v);
+    });
+    return el;
+  };
+  return h(
+    "div",
+    { class: "effort-row", title: "Reasoning effort (← / →)" },
+    h("span", { class: "menu-label" }, "Effort ", h("span", { class: "menu-detail" }, `(${state.variant || "Default"})`)),
+    h(
+      "span",
+      { class: "effort-choices" },
+      choice(null, "effort-chip", "Default"),
+      ranked
+        ? h("span", { class: `effort-track ${state.variant ? "" : "unset"}` }, ...levels.map((v) => choice(v, "effort-dot", "")))
+        : levels.map((v) => choice(v, "effort-chip", v)),
+    ),
+  );
+}
+
+function pickVariant(variant) {
+  state.variant = variant;
+  state.lastVariant = variant;
+  state.variantByModel[modelKey(state.model)] = variant;
+  send({ type: "pickVariant", model: state.model, variant: variant || undefined });
+  renderModelBtn();
+  drawMenu();
+}
+
+/** Step the effort up or down while the model menu is open: Default, then each level. */
+function stepVariant(by) {
+  const levels = [null, ...modelVariants()];
+  const next = levels.indexOf(state.variant) + by;
+  if (levels.length > 1 && next >= 0 && next < levels.length) pickVariant(levels[next]);
 }
 
 function runBuiltin(name) {
@@ -1704,6 +1818,7 @@ function submit() {
     images: state.images,
     includeSelection: state.includeSelection && !!state.selection,
     model: state.model || undefined,
+    variant: state.variant || undefined,
     agent: state.agent,
     autoEdit: state.autoEdit,
   });
@@ -1735,6 +1850,7 @@ function sendExternal(text, mentions) {
     images: [],
     includeSelection: false,
     model: state.model || undefined,
+    variant: state.variant || undefined,
     agent: state.agent,
     autoEdit: state.autoEdit,
   });
@@ -1762,6 +1878,7 @@ function startEdit(id, bubble, text) {
       images: [],
       includeSelection: false,
       model: state.model || undefined,
+      variant: state.variant || undefined,
       agent: state.agent,
       autoEdit: state.autoEdit,
     });
@@ -1836,13 +1953,14 @@ input.addEventListener("input", () => {
   updateMenuFromInput();
 });
 input.addEventListener("click", updateMenuFromInput);
-input.addEventListener("blur", () => setTimeout(() => menu?.kind !== "model" && closeMenu(), 150));
+input.addEventListener("blur", () => setTimeout(() => !isPickerMenu() && closeMenu(), 150));
 input.addEventListener("keydown", (e) => {
   if (menu && menu.items.length) {
     if (e.key === "ArrowDown") return e.preventDefault(), (menu.index = (menu.index + 1) % menu.items.length), drawMenu();
     if (e.key === "ArrowUp") return e.preventDefault(), (menu.index = (menu.index - 1 + menu.items.length) % menu.items.length), drawMenu();
     if (e.key === "Enter" || e.key === "Tab") return e.preventDefault(), acceptMenu();
     if (e.key === "Escape") return e.preventDefault(), closeMenu();
+    if (menu.kind === "model" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return e.preventDefault(), stepVariant(e.key === "ArrowRight" ? 1 : -1);
   }
   if (isSendKey(e)) {
     e.preventDefault();
@@ -1918,7 +2036,7 @@ $("modelBtn").addEventListener("click", (e) => {
   openModelMenu();
 });
 document.addEventListener("click", (e) => {
-  if (menu?.kind === "model" && !menuEl.contains(e.target)) closeMenu();
+  if (isPickerMenu() && !menuEl.contains(e.target)) closeMenu();
   if (!$("historyPop").contains(e.target) && !e.target.closest("#historyBtn, #titleBtn")) $("historyPop").classList.add("hidden");
   if (!$("morePop").contains(e.target) && !e.target.closest("#moreBtn")) $("morePop").classList.add("hidden");
 });
@@ -2194,12 +2312,17 @@ function onEvent(e) {
 
 let errorTimer;
 function showError(message) {
+  showToast(message, "error");
+}
+
+function showToast(message, kind) {
   let el = document.querySelector(".toast");
   if (!el) {
     el = h("div", { class: "toast" });
     document.body.append(el);
   }
   el.textContent = message;
+  el.classList.toggle("info", kind === "info");
   el.classList.add("show");
   clearTimeout(errorTimer);
   errorTimer = setTimeout(() => el.classList.remove("show"), 8000);
@@ -2221,14 +2344,18 @@ window.addEventListener("message", (ev) => {
       state.cwd = msg.cwd;
       state.commands = msg.commands;
       // The extension decides the starting model (last used, opencodeChat.model or OpenCode's default).
-      state.model = msg.defaultModel || null;
+      state.variantByModel = msg.variantByModel || {};
+      state.lastVariant = msg.defaultModel?.variant || null;
+      setModel(msg.defaultModel || null);
+      // The starting model's level comes with it, picked or carried when the panel last closed.
+      if (msg.defaultModel?.variant && modelVariants().includes(msg.defaultModel.variant)) state.variant = msg.defaultModel.variant;
       renderModeBtn();
       renderModelBtn();
       renderSendBtn();
       queueRender();
       break;
     case "setModel":
-      state.model = msg.model;
+      setModel(msg.model, true);
       renderModelBtn();
       renderContext();
       break;

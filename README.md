@@ -23,7 +23,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - Current file / selection shared automatically (eye toggle in the footer)
 - `@` file mentions with autocomplete, `@file#L10-20` line ranges, pasted images
 - `/` commands: built-ins (`/new`, `/compact`, `/model`, `/history`) plus your OpenCode commands
-- Model picker, past conversations (search, resume, delete), task list, Esc to interrupt
+- Model picker with an **Effort** slider (low / high / max …, ← / → to change) for models that offer reasoning variants. Each model remembers its own level; switching to a model without yours rounds down and says so, past conversations (search, resume, delete), task list, Esc to interrupt
 - **Undo to here** on any of your messages: rolls the conversation back and restores the files OpenCode changed (with Redo)
 - **Changes panel** listing every file the session changed, with +/- counts, native diff view and per-file discard
 - **Context meter** showing how full the model's context is and what the session has cost; click to compact

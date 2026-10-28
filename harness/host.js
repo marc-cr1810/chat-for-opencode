@@ -15,8 +15,10 @@ document.documentElement.classList.add(theme);
 document.body.classList.add(theme);
 
 const models = [
-  { providerID: "opencode", providerName: "OpenCode Zen", modelID: "big-pickle", name: "Big Pickle", context: 200_000 },
-  { providerID: "lmstudio", providerName: "LM Studio", modelID: "qwen3.8-27b", name: "Qwen 3.8 27B", context: 128_000 },
+  { providerID: "opencode", providerName: "OpenCode Zen", modelID: "big-pickle", name: "Big Pickle", context: 200_000, variants: ["low", "high", "max"] },
+  { providerID: "opencode", providerName: "OpenCode Zen", modelID: "flint-40b", name: "Flint 40B", context: 200_000, variants: ["max", "low", "medium", "high", "xhigh"] },
+  { providerID: "lmstudio", providerName: "LM Studio", modelID: "qwen3.8-27b", name: "Qwen 3.8 27B", context: 128_000, variants: [] },
+  { providerID: "lmstudio", providerName: "LM Studio", modelID: "tuned-7b", name: "Tuned 7B", context: 32_000, variants: ["fast", "thinking"] },
 ];
 const settings = {
   defaultAgent: "",
