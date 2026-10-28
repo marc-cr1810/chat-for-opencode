@@ -2,7 +2,7 @@
   "name": "chat-for-opencode",
   "displayName": "Chat for OpenCode",
   "description": "Unofficial chat panel for OpenCode agents in VS Code's side bar. Not affiliated with or endorsed by OpenCode.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "local",
   "icon": "media/icon.png",
   "license": "MIT",
