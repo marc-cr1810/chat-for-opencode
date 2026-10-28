@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { open, sent } from "./harness";
+import { event, open, sent, sessionID } from "./harness";
 
 const CWD = "/home/dev/chat-for-opencode";
 /** A tool step by its name, opened if it's folded. */
@@ -28,6 +28,35 @@ test.describe("search results", () => {
     await expect(glob.locator(".res-file")).toHaveCount(20);
     await glob.locator(".res-more").click();
     await expect(glob.locator(".res-file")).toHaveCount(24);
+  });
+});
+
+test.describe("folding", () => {
+  test("a step that only has something to show once it finishes can be unfolded", async ({ page }) => {
+    await open(page, "tools");
+    const sid = await sessionID(page);
+    const part = { id: "prt_9100", messageID: "msg_9100", sessionID: sid, type: "tool", tool: "grep", callID: "c9100" };
+    const input = { pattern: "startRetry", path: `${CWD}/src` };
+    // Running, it has no output, so nothing to unfold; then it finishes, redrawn in place.
+    await event(page, "message.part.updated", { part: { ...part, state: { status: "running", input, time: { start: 0 } } } });
+    const row = page.locator('.tool-row[data-pid="prt_9100"]');
+    await expect(row).not.toHaveClass(/collapsible/);
+    const output = `Found 1 matches\n${CWD}/src/server.ts:\n  Line 120:   private startRetry(attempt: number) {`;
+    await event(page, "message.part.updated", { part: { ...part, state: { status: "completed", input, output, title: "", metadata: {}, time: { start: 0, end: 1 } } } });
+    await expect(row.locator(".tool-sub")).toHaveText("1 match in 1 file");
+    await row.locator(".coll-head").click();
+    await expect(row).toHaveClass(/open/);
+    await expect(row.locator(".res-line")).toHaveText("120private startRetry(attempt: number) {");
+    await row.locator(".coll-head").click();
+    await expect(row).not.toHaveClass(/open/);
+  });
+
+  test("a one-line result is its own summary", async ({ page }) => {
+    await open(page, "tools");
+    const sid = await sessionID(page);
+    const st = { status: "completed", input: { pattern: "nothingLikeThis" }, output: "No files found", title: "", metadata: {}, time: { start: 0, end: 1 } };
+    await event(page, "message.part.updated", { part: { id: "prt_9101", messageID: "msg_9100", sessionID: sid, type: "tool", tool: "grep", callID: "c9101", state: st } });
+    await expect(page.locator('.tool-row[data-pid="prt_9101"] .tool-sub')).toHaveText("No files found");
   });
 });
 

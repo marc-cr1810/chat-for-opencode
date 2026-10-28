@@ -855,7 +855,6 @@ function toggleOpen(el) {
 function collapsible(pid, head, body, cls, open) {
   const el = h("div", { class: `row collapsible ${cls} ${open ? "open" : ""}`, "data-pid": pid });
   const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
-  header.addEventListener("click", () => toggleOpen(el));
   el.append(header, h("div", { class: "coll-body" }, body));
   return el;
 }
@@ -1056,7 +1055,8 @@ function renderTool(p) {
   } else if (st.output) {
     const out = String(st.output);
     const lineCount = out.split("\n").length;
-    summary = h("span", { class: "tool-summary" }, p.tool === "bash" ? firstLine(stripAnsi(out)) || "(no output)" : `${lineCount} line${lineCount === 1 ? "" : "s"}`);
+    // A one-line answer ("No files found") says more than "1 line".
+    summary = h("span", { class: "tool-summary" }, p.tool === "bash" || lineCount === 1 ? firstLine(stripAnsi(out)) || "(no output)" : `${lineCount} lines`);
     const shown = out.length > 20000 ? out.slice(0, 20000) + "\n… (truncated)" : out;
     body = p.tool === "bash" ? h("pre", { class: "tool-output", html: ansiHtml(shown) }) : h("pre", { class: "tool-output" }, shown);
   } else if (status === "running" && p.tool === "bash" && meta.output) {
@@ -1078,7 +1078,6 @@ function renderTool(p) {
   }
   const el = h("div", { class: `row tool-row collapsible ${cls} ${open ? "open" : ""}`, "data-pid": p.id }, dot);
   const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
-  header.addEventListener("click", () => toggleOpen(el));
   el.append(h("div", { class: "tool-main" }, header, summary ? h("div", { class: "tool-sub" }, summary) : null, h("div", { class: "coll-body" }, body)));
   return el;
 }
@@ -1381,7 +1380,6 @@ function renderTaskGroup(tasks) {
   const el = h("div", { class: `row tool-row collapsible ${open ? "open" : ""}`, "data-pid": `${tasks[0].id}-group` }, h("span", { class: `tool-icon status-${status}`, title: status, html: icons.bot }));
   const head = h("span", { class: "tool-head" }, h("span", { class: "tool-name" }, "Subagents"), h("span", { class: "tool-arg" }, plural(tasks.length, "task")));
   const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
-  header.addEventListener("click", () => toggleOpen(el));
   el.append(h("div", { class: "tool-main" }, header, h("div", { class: "tool-sub" }, h("span", { class: "tool-summary" }, summary)), h("div", { class: "coll-body" }, h("div", { class: "subagent-steps" }, rows))));
   return el;
 }
@@ -2593,6 +2591,11 @@ document.addEventListener("keydown", (e) => {
 
 // Clicks inside rendered markdown
 messagesEl.addEventListener("click", (e) => {
+  // Expanding is handled here rather than on each header: a row redrawn in place (say, a tool step
+  // that only has output once it finishes) keeps old nodes, and a listener on a new header would
+  // toggle a copy of the row that never reached the page.
+  const head = e.target.closest(".coll-head");
+  if (head && !e.target.closest("a, button")) return void toggleOpen(head.closest(".collapsible"));
   const copy = e.target.closest(".copy-code");
   if (copy) {
     const code = copy.closest(".code-block, .mermaid-block").querySelector("code").textContent;
