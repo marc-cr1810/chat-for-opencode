@@ -84,6 +84,18 @@ test.describe("composer", () => {
     await expect(page.locator(".effort-chip")).toHaveText(["Default", "fast", "thinking"]);
   });
 
+  test("typing with the model menu open closes it, so Enter sends instead of picking a model", async ({ page }) => {
+    await open(page, "empty");
+    await page.locator("#modelBtn").click();
+    await expect(page.locator("#menu")).toBeVisible();
+    await page.locator("#input").click();
+    await page.keyboard.type("Hello");
+    await expect(page.locator("#menu")).toBeHidden();
+    await page.keyboard.press("Enter");
+    expect(await sent(page, "send")).toEqual([expect.objectContaining({ text: "Hello" })]);
+    expect(await sent(page, "pickModel")).toHaveLength(0);
+  });
+
   test("with sendKey ctrlEnter, Enter adds a line and Ctrl+Enter sends", async ({ page }) => {
     await open(page, "empty", { settings: { sendKey: "ctrlEnter" } });
     const input = page.locator("#input");
@@ -107,16 +119,20 @@ test.describe("composer", () => {
     await expect(page.locator("#editsBtn")).toHaveText("Auto read-only");
   });
 
-  // Known bug: at 300px the edits toggle still runs under the @ and / buttons.
-  test.fixme("the footer fits a narrow side bar without overlapping", async ({ page }) => {
-    await page.setViewportSize({ width: 300, height: 700 });
-    await open(page, "walkthrough");
-    const edits = await page.locator("#editsBtn").boundingBox();
-    const right = await page.locator(".foot-right").boundingBox();
-    expect(edits!.x + edits!.width).toBeLessThanOrEqual(right!.x);
-    // Nothing scrolls sideways.
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(300);
-  });
+  for (const width of [240, 300, 360]) {
+    test(`the footer fits a ${width}px side bar without overlapping`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 700 });
+      await open(page, "walkthrough");
+      const edits = await page.locator("#editsBtn").boundingBox();
+      const right = await page.locator(".foot-right").boundingBox();
+      expect(edits!.x + edits!.width).toBeLessThanOrEqual(right!.x);
+      // The send button stays inside the box, and nothing scrolls sideways.
+      const send = await page.locator("#sendBtn").boundingBox();
+      const box = await page.locator(".composer").boundingBox();
+      expect(send!.x + send!.width).toBeLessThanOrEqual(box!.x + box!.width);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    });
+  }
 });
 
 test.describe("context meter", () => {
@@ -125,5 +141,55 @@ test.describe("context meter", () => {
     const meter = page.locator("#ctxBtn");
     await expect(meter).toContainText("47%");
     await expect(meter).toHaveClass(/warn/);
+  });
+});
+
+test.describe("drag and drop", () => {
+  /** Fire a drag over the panel and drop it, with whatever the DataTransfer is given. */
+  async function drop(page: import("@playwright/test").Page, data: Record<string, string>, files: { name: string; type: string }[] = []) {
+    await page.evaluate(
+      ([data, files]) => {
+        const dt = new DataTransfer();
+        for (const [k, v] of Object.entries(data)) dt.setData(k, v);
+        for (const f of files) dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], f.name, { type: f.type }));
+        const fire = (type: string) => document.querySelector("#messages")!.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+        fire("dragenter");
+        fire("dragover");
+        (window as any).overlayDuringDrag = !document.querySelector(".drop-overlay")!.classList.contains("hidden");
+        fire("drop");
+      },
+      [data, files] as const,
+    );
+  }
+
+  test("files from the Explorer go to the extension, with the overlay showing while dragging", async ({ page }) => {
+    await open(page, "empty");
+    await drop(page, { "application/vnd.code.uri-list": "file:///home/dev/calc/math.py\r\nfile:///home/dev/calc/shot.png" });
+    expect(await page.evaluate(() => (window as any).overlayDuringDrag)).toBe(true);
+    await expect(page.locator(".drop-overlay")).toBeHidden();
+    expect(await sent(page, "dropped")).toEqual([{ type: "dropped", uris: ["file:///home/dev/calc/math.py", "file:///home/dev/calc/shot.png"] }]);
+  });
+
+  test("an image dropped without a path is attached directly; other such files explain why not", async ({ page }) => {
+    await open(page, "empty");
+    await drop(page, {}, [{ name: "shot.png", type: "image/png" }, { name: "notes.txt", type: "text/plain" }]);
+    await expect(page.locator("#attachments img")).toHaveCount(1);
+    await expect(page.locator(".toast.show")).toContainText("notes.txt");
+    expect(await sent(page, "dropped")).toHaveLength(0);
+  });
+
+  test("dragging plain text is left to the input", async ({ page }) => {
+    await open(page, "empty");
+    await drop(page, { "text/plain": "some words" });
+    expect(await page.evaluate(() => (window as any).overlayDuringDrag)).toBe(false);
+    expect(await sent(page, "dropped")).toHaveLength(0);
+  });
+
+  test("images the extension read from dropped files are attached", async ({ page }) => {
+    await open(page, "empty");
+    await page.evaluate(() =>
+      (window as any).harness.post({ type: "addImages", images: [{ dataUrl: "data:image/png;base64,iVBORw0KGgo=", mime: "image/png", name: "shot.png" }] }),
+    );
+    await expect(page.locator("#attachments img")).toHaveCount(1);
   });
 });

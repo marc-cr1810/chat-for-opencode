@@ -22,6 +22,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - Agent switcher (build, plan and your custom agents) cycled with **Tab**, plus an approve / auto-approve edits toggle
 - Current file / selection shared automatically (eye toggle in the footer)
 - `@` file mentions with autocomplete, `@file#L10-20` line ranges, pasted images
+- **Drag and drop** files, folders and images onto the chat: images are attached, everything else becomes an `@` mention
 - `/` commands: built-ins (`/new`, `/compact`, `/model`, `/history`) plus your OpenCode commands
 - Model picker with an **Effort** slider (low / high / max …, ← / → to change) for models that offer reasoning variants. Each model remembers its own level; switching to a model without yours rounds down and says so, past conversations (search, resume, delete), task list, Esc to interrupt
 - **Undo to here** on any of your messages: rolls the conversation back and restores the files OpenCode changed (with Redo)

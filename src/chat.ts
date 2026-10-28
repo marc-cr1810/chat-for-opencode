@@ -82,6 +82,16 @@ const LAST_MODEL_KEY = "opencode.lastModel";
 /** "provider/model" -> the reasoning effort last picked for that model (null: the model's default). */
 const VARIANTS_KEY = "opencode.modelVariants";
 
+/** Image types a dropped file can be attached as, by extension. */
+const IMAGE_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
 type ModelRef = { providerID: string; modelID: string; variant?: string };
 
 let tabCounter = 0;
@@ -486,6 +496,8 @@ export class ChatController implements vscode.Disposable {
       }
       case "loadSession":
         return this.openSession(msg.id);
+      case "dropped":
+        return this.dropped(msg.uris ?? []);
       case "renameSession":
         return this.renameSession(msg.id, msg.title, !!msg.relist);
       case "fork":
@@ -712,6 +724,43 @@ export class ChatController implements vscode.Disposable {
     this.tab.title = session.title || "Conversation";
     await this.loadSession(id);
     this.sendTabs();
+  }
+
+  /**
+   * Files dropped on the panel: images are attached, like a pasted image; anything else (folders
+   * too) goes in the prompt as an @mention.
+   */
+  private async dropped(uris: string[]) {
+    const images: { dataUrl: string; mime: string; name: string }[] = [];
+    const skipped: string[] = [];
+    for (const raw of uris) {
+      let uri: vscode.Uri;
+      try {
+        uri = vscode.Uri.parse(raw, true);
+      } catch {
+        continue;
+      }
+      if (uri.scheme !== "file") continue;
+      const name = path.basename(uri.fsPath);
+      const mime = IMAGE_TYPES[path.extname(uri.fsPath).toLowerCase()];
+      const stat = await vscode.workspace.fs.stat(uri).then((s) => s, () => undefined);
+      if (!stat) continue;
+      if (mime && !(stat.type & vscode.FileType.Directory)) {
+        if (stat.size > MAX_IMAGE_BYTES) {
+          skipped.push(`${name} (over ${MAX_IMAGE_BYTES / 1024 / 1024} MB)`);
+          continue;
+        }
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        images.push({ dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`, mime, name });
+        continue;
+      }
+      const rel = this.relative(uri.fsPath);
+      // A mention ends at whitespace, so a path with a space in it can't be one.
+      if (/\s/.test(rel)) skipped.push(`${name} (the path has a space in it)`);
+      else this.insertMention({ path: rel });
+    }
+    if (images.length) this.post({ type: "addImages", images });
+    if (skipped.length) this.error(`Couldn't add ${skipped.join(", ")}.`);
   }
 
   /** Rename a conversation. OpenCode takes an empty title too, which would blank it, so that's ignored. */

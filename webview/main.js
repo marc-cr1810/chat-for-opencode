@@ -1954,6 +1954,8 @@ function setAutoEdit(on) {
 }
 
 input.addEventListener("input", () => {
+  // Typing means writing a prompt, not picking a model: close the model menu so Enter sends.
+  if (isPickerMenu()) closeMenu();
   autosize();
   renderSendBtn();
   updateMenuFromInput();
@@ -2002,16 +2004,67 @@ input.addEventListener("paste", (e) => {
     if (item.type.startsWith("image/")) {
       e.preventDefault();
       const file = item.getAsFile();
-      if (!file) continue;
-      const reader = new FileReader();
-      reader.onload = () => {
-        state.images.push({ dataUrl: reader.result, mime: item.type, name: file.name || `pasted-image.${item.type.split("/")[1]}` });
-        renderAttachments();
-        renderSendBtn();
-      };
-      reader.readAsDataURL(file);
+      if (file) addImageFile(file, "pasted-image");
     }
   }
+});
+
+// ------------------------------------------------------------ drag and drop
+
+/** URI lists VS Code's Explorer and file managers put on a drag. Dragged text is left to the input. */
+const URI_TYPES = ["application/vnd.code.uri-list", "text/uri-list"];
+const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].some((t) => t === "Files" || URI_TYPES.includes(t));
+
+function addImageFile(file, fallback = "dropped-image") {
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.images.push({ dataUrl: reader.result, mime: file.type, name: file.name || `${fallback}.${file.type.split("/")[1]}` });
+    renderAttachments();
+    renderSendBtn();
+  };
+  reader.readAsDataURL(file);
+}
+
+let dragDepth = 0;
+const dropOverlay = h("div", { class: "drop-overlay hidden" }, h("div", { class: "drop-label" }, h("span", { html: icons.at }), "Drop to add to the prompt"));
+document.body.append(dropOverlay);
+const showDrop = (on) => dropOverlay.classList.toggle("hidden", !on);
+
+document.addEventListener("dragenter", (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  showDrop(true);
+});
+document.addEventListener("dragover", (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+document.addEventListener("dragleave", (e) => {
+  if (!isFileDrag(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) showDrop(false);
+});
+document.addEventListener("drop", (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  showDrop(false);
+  const dt = e.dataTransfer;
+  const list = URI_TYPES.map((t) => dt.getData(t)).find((v) => v);
+  if (list) {
+    // With paths, the extension reads images itself and makes everything else an @mention.
+    const uris = list.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    send({ type: "dropped", uris });
+  } else {
+    // Only the files' contents came through (no paths): images can still be attached.
+    const files = [...dt.files];
+    files.filter((f) => f.type.startsWith("image/")).forEach(addImageFile);
+    const other = files.filter((f) => !f.type.startsWith("image/"));
+    if (other.length) showError(`Couldn't tell where ${other.map((f) => f.name).join(", ")} ${other.length > 1 ? "are" : "is"}; drop files from VS Code's Explorer to mention them.`);
+  }
+  input.focus();
 });
 
 $("sendBtn").addEventListener("click", () => (state.busy && !input.value.trim() ? send({ type: "abort" }) : submit()));
@@ -2505,6 +2558,12 @@ window.addEventListener("message", (ev) => {
       break;
     }
     case "focus":
+      input.focus();
+      break;
+    case "addImages":
+      state.images.push(...msg.images);
+      renderAttachments();
+      renderSendBtn();
       input.focus();
       break;
     case "error":

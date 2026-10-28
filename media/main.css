@@ -418,7 +418,22 @@ body.vscode-light, body.vscode-high-contrast-light {
 #input::placeholder { color: var(--vscode-input-placeholderForeground); }
 .composer-foot { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 6px; gap: 6px; }
 .foot-left, .foot-right { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.foot-right { flex-shrink: 0; }
+/* In a narrow side bar the toggles drop to their icons (the text stays in the tooltip) and the model
+   name gives way, rather than one side running under the other. */
+.composer-foot { container-type: inline-size; }
+.foot-left, .foot-right > * { flex-shrink: 0; }
+.foot-right > .model-pill { flex-shrink: 1; min-width: 28px; }
+@container (max-width: 430px) {
+  .edits-pill span, .sel-pill span { display: none; }
+}
+/* Narrower still, the context meter keeps its ring; the numbers stay in its tooltip. */
+@container (max-width: 300px) {
+  .ctx-meter:has(svg) span { display: none; }
+}
+/* At the side bar's narrowest, the / button goes; typing / does the same. */
+@container (max-width: 230px) {
+  #slashBtn { display: none; }
+}
 .pill {
   display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 0.88em;
   color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
@@ -437,6 +452,7 @@ body.vscode-light, body.vscode-high-contrast-light {
 .sel-pill { min-width: 0; flex-shrink: 2; }
 .sel-pill.off { opacity: 0.6; text-decoration: line-through; }
 .model-pill { max-width: 160px; }
+.model-pill > span:first-child { min-width: 0; }
 .model-variant { color: var(--muted); margin-left: 4px; flex-shrink: 0; }
 /* Pinned to the bottom of the scrolling model list. */
 .effort-row {
@@ -546,6 +562,11 @@ body.vscode-light, body.vscode-high-contrast-light {
 .btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
 .btn:hover { filter: brightness(1.1); }
 
+.drop-overlay {
+  position: fixed; inset: 6px; z-index: 40; display: flex; align-items: center; justify-content: center; pointer-events: none;
+  border: 2px dashed var(--accent); border-radius: var(--radius); background: color-mix(in srgb, var(--bg) 75%, transparent);
+}
+.drop-label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--accent); color: #1b1b1b; font-weight: 600; }
 .toast {
   position: fixed; left: 12px; right: 12px; bottom: 90px; z-index: 50; padding: 8px 12px; border-radius: 6px; cursor: pointer;
   background: var(--vscode-inputValidation-errorBackground, #5a1d1d); border: 1px solid var(--vscode-inputValidation-errorBorder, var(--err));
