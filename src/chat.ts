@@ -109,6 +109,9 @@ export class ChatController implements vscode.Disposable {
   private diffTimer: NodeJS.Timeout | undefined;
   private lastEditor: vscode.TextEditor | undefined;
   private ready = false;
+  /** The webview has loaded and asked for init at least once. */
+  private webviewLoaded = false;
+  private initializing: Promise<void> | undefined;
   private pendingPrompts: { text: string; mentions: Mention[] }[] = [];
 
   constructor(
@@ -130,7 +133,13 @@ export class ChatController implements vscode.Disposable {
     this.disposables.push(
       webview.onDidReceiveMessage((msg) => this.handle(msg).catch((err) => this.error(err))),
       server.onEvent((e) => this.onEvent(e)),
-      server.onStatus((s) => this.post({ type: "serverStatus", status: s })),
+      server.onStatus((s) => {
+        this.post({ type: "serverStatus", status: s });
+        if (s === "stopped" || s === "error") this.ready = false;
+        // A restart (or a recovery after failing to start) needs the agents, models and commands again.
+        if (s === "ready" && this.webviewLoaded && !this.initializing) void this.runInit();
+      }),
+      server.onReconnect(() => void this.resync().catch(() => undefined)),
       vscode.window.onDidChangeTextEditorSelection(() => this.queueSelection()),
       vscode.window.onDidChangeActiveTextEditor(() => this.queueSelection()),
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -164,18 +173,18 @@ export class ChatController implements vscode.Disposable {
     const tab = this.tab;
     const sid = tab.sessionID;
     if (!sid) return;
-    await this.req("POST", `/session/${sid}/abort`).catch(() => undefined);
-    const messages = await this.req<any[]>("GET", `/session/${sid}/message`);
+    await this.req("POST", `/session/${sid}/abort`, undefined, {}, tab.directory).catch(() => undefined);
+    const messages = await this.req<any[]>("GET", `/session/${sid}/message`, undefined, {}, tab.directory);
     const user = messages.findLast((m: any) => m.info.role === "user" && !m.parts.some((p: any) => p.type === "compaction"));
     if (!user) return;
     const parts = user.parts
       .filter((p: any) => p.type === "text" || p.type === "file")
       .map(({ id, sessionID, messageID, ...rest }: any) => rest);
-    const session = await this.req<any>("POST", `/session/${sid}/revert`, { messageID: user.info.id });
-    this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
+    const session = await this.req<any>("POST", `/session/${sid}/revert`, { messageID: user.info.id }, {}, tab.directory);
+    if (tab === this.tab) this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
     const agent = user.info.agent ?? this.agent;
     await this.applyRules(tab, agent);
-    await this.req("POST", `/session/${sid}/prompt_async`, { parts, agent, model: user.info.model });
+    await this.req("POST", `/session/${sid}/prompt_async`, { parts, agent, model: user.info.model }, {}, tab.directory);
   }
 
   // -------------------------------------------------------------------- tabs
@@ -421,12 +430,16 @@ export class ChatController implements vscode.Disposable {
   private async handle(msg: any): Promise<void> {
     switch (msg.type) {
       case "ready":
-        return this.init();
+        this.webviewLoaded = true;
+        return this.runInit();
       case "send":
+        await this.whenReady();
         return this.send(msg as SendRequest);
       case "editResend":
+        await this.whenReady();
         return this.editResend(msg.messageID, msg as SendRequest);
       case "retry":
+        await this.whenReady();
         return this.retry();
       case "abort":
         if (this.sessionID) await this.req("POST", `/session/${this.sessionID}/abort`);
@@ -531,6 +544,42 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  private runInit() {
+    return (this.initializing ??= this.init().finally(() => (this.initializing = undefined)));
+  }
+
+  /**
+   * Prompts need the agents' rules, which init fetches; a session created without them would get
+   * looser permissions than the agent allows. Starts (or restarts) the server if it isn't up.
+   */
+  private async whenReady() {
+    if (!this.ready) await this.runInit();
+    if (!this.ready) throw new Error("OpenCode isn't running. Use Restart Server, or check the output log.");
+  }
+
+  /** The event stream dropped and came back: catch up on whatever finished or changed in the gap. */
+  private async resync() {
+    if (!this.ready) return;
+    const dirs = [...new Set(this.tabs.filter((t) => t.sessionID).map((t) => t.directory))];
+    const statuses = await Promise.all(dirs.map((d) => this.req<Record<string, any>>("GET", "/session/status", undefined, {}, d).catch(() => undefined)));
+    dirs.forEach((dir, i) => {
+      const status = statuses[i];
+      if (!status) return;
+      for (const tab of this.tabs.filter((t) => t.sessionID && t.directory === dir)) {
+        // Idle sessions aren't listed.
+        const busy = !!status[tab.sessionID!] && status[tab.sessionID!].type !== "idle";
+        if (busy === tab.busy) continue;
+        tab.busy = busy;
+        if (!busy) {
+          tab.pending.clear();
+          this.notify(tab, "done");
+        }
+      }
+    });
+    this.sendTabs();
+    if (this.tab.sessionID) await this.loadSession(this.tab.sessionID);
+  }
+
   private async init() {
     this.post({ type: "serverStatus", status: "starting" });
     try {
@@ -602,8 +651,23 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async closeTab(key: string) {
-    const idx = this.tabs.findIndex((t) => t.key === key);
+    let idx = this.tabs.findIndex((t) => t.key === key);
     if (idx < 0) return;
+    const tab = this.tabs[idx];
+    // Once closed, nothing here would show its approval requests, so a running conversation would hang
+    // on them. Stop it, unless another panel has it open and keeps track of it.
+    const openElsewhere = [...liveControllers].some((c) => c !== this && c.tabs.some((t) => t.sessionID === tab.sessionID));
+    if (tab.sessionID && (tab.busy || tab.pending.size) && !openElsewhere) {
+      const pick = await vscode.window.showWarningMessage(
+        `"${tab.title}" is still running. Stop it and close the tab?`,
+        { modal: true },
+        "Stop and Close",
+      );
+      if (pick !== "Stop and Close") return;
+      await this.req("POST", `/session/${tab.sessionID}/abort`, undefined, {}, tab.directory).catch(() => undefined);
+      idx = this.tabs.indexOf(tab);
+      if (idx < 0) return;
+    }
     this.tabs.splice(idx, 1);
     if (!this.tabs.length) this.addTab();
     if (key === this.activeKey || !this.tabs.some((t) => t.key === this.activeKey)) {
@@ -626,15 +690,14 @@ export class ChatController implements vscode.Disposable {
     this.sendTabs();
   }
 
-  private async ensureSession(): Promise<string> {
-    const tab = this.tab;
+  private async ensureSession(tab = this.tab): Promise<string> {
     if (tab.sessionID) return tab.sessionID;
-    const session = await this.req<any>("POST", "/session", { permission: this.rulesFor(this.agent) });
+    const session = await this.req<any>("POST", "/session", { permission: this.rulesFor(this.agent) }, {}, tab.directory);
     tab.sessionID = session.id;
     tab.agent = this.agent;
     tab.rulesKey = this.rulesKey(session.id, this.agent);
     tab.children.clear();
-    this.post({ type: "session", session, messages: [], worktree: tab.worktree });
+    if (tab === this.tab) this.post({ type: "session", session, messages: [], worktree: tab.worktree });
     this.sendTabs();
     return session.id;
   }
@@ -687,12 +750,16 @@ export class ChatController implements vscode.Disposable {
   private async send(req: SendRequest) {
     const text = req.text.trim();
     const slash = text.match(/^\/(\S+)\s*([\s\S]*)$/);
-    const sessionID = await this.ensureSession();
+    // The user can switch tabs while this awaits; everything below belongs to the tab it was sent from.
+    const tab = this.tab;
+    const dir = tab.directory;
+    const sessionID = await this.ensureSession(tab);
     const agent = req.agent || "build";
+    const selectionPart = req.includeSelection ? this.selectionContext() : undefined;
 
     const fileParts: any[] = [];
     for (const m of req.mentions) {
-      const abs = this.absolute(m.path);
+      const abs = path.isAbsolute(m.path) ? m.path : path.join(dir, m.path);
       let url = vscode.Uri.file(abs).toString();
       if (m.startLine) url += `?start=${m.startLine}&end=${m.endLine ?? m.startLine}`;
       let mime = "text/plain";
@@ -713,25 +780,24 @@ export class ChatController implements vscode.Disposable {
       const command = commands.find((c) => c.name === slash[1]);
       if (command) {
         // A command can name its own agent, which then runs instead of the selected one.
-        await this.applyRules(this.tab, command.agent ?? agent);
+        await this.applyRules(tab, command.agent ?? agent);
         await this.req("POST", `/session/${sessionID}/command`, {
           command: slash[1],
           arguments: slash[2] ?? "",
           agent,
           model: req.model ? `${req.model.providerID}/${req.model.modelID}` : undefined,
           parts: fileParts.filter((p) => !p.url.startsWith("data:")),
-        });
+        }, {}, dir);
         return;
       }
     }
 
     const parts: any[] = [{ type: "text", text }];
-    const selectionPart = req.includeSelection ? this.selectionContext() : undefined;
     if (selectionPart) parts.push(selectionPart);
     parts.push(...fileParts);
 
-    await this.applyRules(this.tab, agent);
-    await this.req("POST", `/session/${sessionID}/prompt_async`, { parts, agent, model: req.model });
+    await this.applyRules(tab, agent);
+    await this.req("POST", `/session/${sessionID}/prompt_async`, { parts, agent, model: req.model }, {}, dir);
   }
 
   private async revert(messageID: string) {

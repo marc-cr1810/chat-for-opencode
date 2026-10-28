@@ -1240,7 +1240,8 @@ function renderSendBtn() {
   btn.innerHTML = showStop ? icons.stop : icons.arrowUp;
   btn.title = showStop ? "Stop (Esc)" : "Send (Enter)";
   btn.classList.toggle("stop", showStop);
-  btn.disabled = !showStop && !input.value.trim() && !state.images.length;
+  btn.disabled = !showStop && ((!input.value.trim() && !state.images.length) || !state.ready);
+  if (!state.ready && !showStop) btn.title = "Waiting for OpenCode to start";
 }
 
 function renderChanges() {
@@ -1687,6 +1688,8 @@ function parseMentions(text) {
 function submit() {
   const text = input.value.trim();
   if (!text && !state.images.length) return;
+  // Until OpenCode has started the agents' permission rules aren't known; keep the text for later.
+  if (!state.ready) return;
   state.timedOut = null;
   const slash = text.match(/^\/(\S+)$/);
   if (slash && BUILTIN_COMMANDS.some((c) => c.name === slash[1])) {
@@ -2221,6 +2224,7 @@ window.addEventListener("message", (ev) => {
       state.model = msg.defaultModel || null;
       renderModeBtn();
       renderModelBtn();
+      renderSendBtn();
       queueRender();
       break;
     case "setModel":

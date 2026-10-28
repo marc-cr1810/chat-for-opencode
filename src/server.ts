@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { spawn, ChildProcess } from "child_process";
+import { randomBytes } from "crypto";
 import { ListenUrlWatcher, SseParser, unwrapGlobalEvent } from "./streams";
 
 export interface OpencodeEvent {
@@ -22,6 +23,11 @@ export class OpencodeServer implements vscode.Disposable {
   readonly onEvent = this.emitter.event;
   private readonly statusEmitter = new vscode.EventEmitter<"starting" | "ready" | "stopped" | "error">();
   readonly onStatus = this.statusEmitter.event;
+  /** The event stream came back after dropping; anything sent in the gap was missed. */
+  private readonly reconnectEmitter = new vscode.EventEmitter<void>();
+  readonly onReconnect = this.reconnectEmitter.event;
+  /** Basic auth for the running server; a fresh password each launch so other local processes can't drive it. */
+  private authHeader = "";
 
   constructor(private readonly output: vscode.OutputChannel, readonly directory: string) {}
 
@@ -38,10 +44,12 @@ export class OpencodeServer implements vscode.Disposable {
     const bin = vscode.workspace.getConfiguration("opencodeChat").get<string>("binaryPath") || "opencode";
     this.output.appendLine(`Starting ${bin} serve in ${this.directory}`);
     return new Promise((resolve, reject) => {
+      const password = randomBytes(24).toString("base64url");
       const proc = spawn(bin, ["serve", "--port", "0", "--hostname", "127.0.0.1"], {
         cwd: this.directory,
-        env: { ...process.env },
+        env: { ...process.env, OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: password },
       });
+      this.authHeader = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
       this.proc = proc;
       const watcher = new ListenUrlWatcher();
       let settled = false;
@@ -90,13 +98,16 @@ export class OpencodeServer implements vscode.Disposable {
     this.eventAbort?.abort();
     const abort = new AbortController();
     this.eventAbort = abort;
+    let connected = false;
     while (!abort.signal.aborted && this.baseUrl) {
       try {
         const res = await fetch(this.url("/global/event"), {
-          headers: { Accept: "text/event-stream" },
+          headers: { Accept: "text/event-stream", Authorization: this.authHeader },
           signal: abort.signal,
         });
-        if (!res.body) throw new Error("No event stream body");
+        if (!res.ok || !res.body) throw new Error(`Event stream failed (${res.status})`);
+        if (connected) this.reconnectEmitter.fire();
+        connected = true;
         const decoder = new TextDecoder();
         const parser = new SseParser();
         for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
@@ -129,7 +140,7 @@ export class OpencodeServer implements vscode.Disposable {
     await this.start();
     const res = await fetch(this.url(path, query), {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      headers: { Authorization: this.authHeader, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -163,5 +174,6 @@ export class OpencodeServer implements vscode.Disposable {
     this.stop();
     this.emitter.dispose();
     this.statusEmitter.dispose();
+    this.reconnectEmitter.dispose();
   }
 }
