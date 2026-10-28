@@ -534,6 +534,9 @@ function renderMessage(id) {
     );
   }
   const el = h("div", { class: "msg assistant", "data-mid": id });
+  // Running tools and to-dos take the colour of the agent that wrote this reply, not the one selected now.
+  const agent = msg.info.agent || msg.info.mode;
+  if (agent && state.agents.includes(agent)) el.style.setProperty("--accent", agentColor(agent));
   if (msg.info.summary === true || msg.info.mode === "compaction") {
     // The summary written by /compact: folded away, like the command that produced it.
     const summary = parts.filter((p) => p.type === "text" && !p.synthetic).map((p) => p.text).join("\n\n");
@@ -894,9 +897,10 @@ function fillStatusRow(el) {
     verb = `No response from ${modelName()} for ${stalled}s`;
     hint = state.settings.responseTimeoutSeconds ? `stops at ${state.settings.responseTimeoutSeconds}s` : "";
   } else {
-    verb = `${state.agent} is working`;
+    verb = `${runningAgent()} is working`;
     hint = `${Math.floor((Date.now() - state.busySince) / 1000)}s · Esc to stop`;
   }
+  el.style.setProperty("--accent", agentColor(runningAgent()));
   const warn = r || !state.busy || (stalled && state.settings.stallWarningSeconds && stalled >= state.settings.stallWarningSeconds);
   el.classList.toggle("stalled", !!warn);
   el.classList.toggle("timed-out", !state.busy);
@@ -917,6 +921,18 @@ function formatWait(secs) {
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+}
+
+/**
+ * The agent doing the current work: the unfinished reply's agent, else the latest message's. The
+ * picker only sets the agent for the next message, so switching it mid-run doesn't change this.
+ */
+function runningAgent() {
+  const infos = state.order.filter((id) => !isReverted(id)).map((id) => state.messages.get(id)?.info).filter(Boolean).reverse();
+  const live = infos.find((i) => i.role === "assistant" && !i.time?.completed && (i.agent || i.mode));
+  const latest = live || infos.find((i) => i.agent || (i.role === "assistant" && i.mode));
+  const name = latest?.agent || latest?.mode;
+  return name && state.agents.includes(name) ? name : state.agent;
 }
 
 /** Seconds since the model last sent anything, or 0 while a tool is running (tools can take as long as they like). */
@@ -1186,7 +1202,8 @@ function renderPermission(p) {
   };
   const card = h(
     "div",
-    { class: "card permission", tabindex: "0" },
+    // Asked by the agent doing the work, so in its colour whatever the picker says.
+    { class: "card permission", tabindex: "0", style: `--accent: ${agentColor(runningAgent())}` },
     h("div", { class: "card-kicker" }, h("span", { html: icons.shield }), "Permission required"),
     h("div", { class: "card-title" }, info.title),
     info.command ? h("pre", { class: "card-command" }, info.command) : null,
@@ -1237,7 +1254,7 @@ function renderQuestion(q) {
   };
   const skip = () => (send({ type: "questionReject", id: q.id }), done());
 
-  const card = h("div", { class: "card question", tabindex: "-1" });
+  const card = h("div", { class: "card question", tabindex: "-1", style: `--accent: ${agentColor(runningAgent())}` });
   const tabs = multi ? h("div", { class: "q-tabs", role: "tablist" }) : null;
   const body = h("div", { class: "q-body" });
   const actions = h("div", { class: "card-actions" });

@@ -5,6 +5,44 @@ const row = (page) => page.locator(".status-row");
 const visibleActions = (page) => page.locator(".status-actions button:not(.hidden)");
 
 test.describe("status line", () => {
+  test("keeps the running agent's name and colour when you switch agents mid-run", async ({ page }) => {
+    await open(page, "walkthrough");
+    const sid = await sessionID(page);
+    await event(page, "session.status", { sessionID: sid, status: { type: "busy" } });
+    const accent = (sel: string) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).getPropertyValue("--accent").trim());
+    await expect(row(page).locator(".verb")).toHaveText("plan is working");
+    const planColor = await accent(".status-row");
+
+    // The picker now says build, for the next message; the work under way is still plan's.
+    await page.locator("textarea").press("Tab");
+    await expect(page.locator("#modeBtn")).toHaveText("build");
+    await expect(row(page).locator(".verb")).toHaveText("plan is working");
+    expect(await accent(".status-row")).toBe(planColor);
+    expect(await accent(".msg.assistant")).toBe(planColor);
+    expect(await accent("body")).not.toBe(planColor);
+  });
+
+  test("earlier plan replies keep plan's colour once build takes over", async ({ page }) => {
+    await open(page, "walkthrough");
+    const sid = await sessionID(page);
+    const codeColor = (msg: string) => page.locator(`.msg[data-mid="${msg}"] .markdown code`).first().evaluate((el) => getComputedStyle(el).color);
+    const planReply = await page.locator(".msg.assistant").last().getAttribute("data-mid");
+    const planCode = await codeColor(planReply!);
+
+    // Switch to build and get a build reply.
+    await page.locator("textarea").press("Tab");
+    const now = Date.now();
+    await event(page, "message.updated", { info: { id: "msg_9001", sessionID: sid, role: "user", agent: "build", time: { created: now } } });
+    await event(page, "message.updated", { info: { id: "msg_9002", sessionID: sid, role: "assistant", mode: "build", agent: "build", parentID: "msg_9001", time: { created: now } } });
+    await event(page, "message.part.updated", { part: { id: "prt_9002", messageID: "msg_9002", sessionID: sid, type: "text", text: "Now in `build`." } });
+    await event(page, "session.status", { sessionID: sid, status: { type: "busy" } });
+
+    await expect(page.locator('.msg[data-mid="msg_9002"] .markdown code')).toHaveText("build");
+    expect(await codeColor(planReply!)).toBe(planCode);
+    expect(await codeColor("msg_9002")).not.toBe(planCode);
+    await expect(row(page).locator(".verb")).toHaveText("build is working");
+  });
+
   test("shows the agent working, then warns when the model goes quiet", async ({ page }) => {
     await open(page, "walkthrough", { clock: true });
     const sid = await sessionID(page);
