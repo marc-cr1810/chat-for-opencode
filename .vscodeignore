@@ -9,3 +9,8 @@ tsconfig.json
 test/**
 vitest.config.*
 docs/**
+harness/**
+playwright.config.ts
+vitest.config.mts
+test-results/**
+playwright-report/**

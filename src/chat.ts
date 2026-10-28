@@ -1111,6 +1111,7 @@ export class ChatController implements vscode.Disposable {
     const nonce = Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join("");
     const script = this.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview.js"));
     const style = this.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "main.css"));
+    const katexStyle = this.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "katex", "katex.min.css"));
     const csp = [
       "default-src 'none'",
       `style-src ${this.webview.cspSource} 'unsafe-inline'`,
@@ -1124,6 +1125,7 @@ export class ChatController implements vscode.Disposable {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="${katexStyle}">
 <link rel="stylesheet" href="${style}">
 <title>OpenCode</title>
 </head>

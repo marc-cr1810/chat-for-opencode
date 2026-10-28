@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The chat webview's CSP (src/chat.ts), with 'self' standing in for the webview origin and nonce. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; script-src 'self'">
+<title>Chat for OpenCode harness</title>
+<style>
+/* The theme variables VS Code injects into webviews (Dark Modern and Light Modern), on the root element as VS Code does. */
+html.vscode-dark {
+  --vscode-font-family: -apple-system, "Segoe UI", Ubuntu, "Droid Sans", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: "Droid Sans Mono", "DejaVu Sans Mono", monospace;
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-errorForeground: #f85149;
+  --vscode-focusBorder: #0078d4;
+  --vscode-sideBar-background: #181818;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-editorWidget-background: #202020;
+  --vscode-editorGroupHeader-tabsBackground: #181818;
+  --vscode-panel-border: #2b2b2b;
+  --vscode-widget-border: #313131;
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-input-placeholderForeground: #989898;
+  --vscode-inputValidation-errorBackground: #5a1d1d;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-button-background: #0078d4;
+  --vscode-button-foreground: #ffffff;
+  --vscode-badge-background: #616161;
+  --vscode-badge-foreground: #f8f8f8;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textCodeBlock-background: #2b2b2b;
+  --vscode-toolbar-hoverBackground: #5a5d5e50;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-list-inactiveSelectionBackground: #37373d;
+  --vscode-quickInput-background: #222222;
+  --vscode-quickInputList-focusBackground: #04395e;
+  --vscode-quickInputList-focusForeground: #ffffff;
+  --vscode-diffEditor-insertedLineBackground: #9bb95533;
+  --vscode-diffEditor-removedLineBackground: #ff000033;
+  --vscode-editorWarning-foreground: #cca700;
+  --vscode-testing-iconPassed: #73c991;
+  --vscode-gitDecoration-modifiedResourceForeground: #e2c08d;
+  --vscode-gitDecoration-deletedResourceForeground: #c74e39;
+  --vscode-gitDecoration-untrackedResourceForeground: #73c991;
+}
+html.vscode-light {
+  --vscode-font-family: -apple-system, "Segoe UI", Ubuntu, "Droid Sans", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: "Droid Sans Mono", "DejaVu Sans Mono", monospace;
+  --vscode-foreground: #3b3b3b;
+  --vscode-descriptionForeground: #3b3b3b;
+  --vscode-errorForeground: #f85149;
+  --vscode-focusBorder: #005fb8;
+  --vscode-sideBar-background: #f8f8f8;
+  --vscode-editor-background: #ffffff;
+  --vscode-editorWidget-background: #f8f8f8;
+  --vscode-editorGroupHeader-tabsBackground: #f8f8f8;
+  --vscode-panel-border: #e5e5e5;
+  --vscode-widget-border: #e5e5e5;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #3b3b3b;
+  --vscode-input-border: #cecece;
+  --vscode-input-placeholderForeground: #767676;
+  --vscode-inputValidation-errorBackground: #f2dede;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-button-background: #005fb8;
+  --vscode-button-foreground: #ffffff;
+  --vscode-badge-background: #cccccc;
+  --vscode-badge-foreground: #3b3b3b;
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-textCodeBlock-background: #f8f8f8;
+  --vscode-toolbar-hoverBackground: #b8b8b850;
+  --vscode-list-hoverBackground: #f2f2f2;
+  --vscode-list-activeSelectionBackground: #e8e8e8;
+  --vscode-list-activeSelectionForeground: #000000;
+  --vscode-list-inactiveSelectionBackground: #e4e6f1;
+  --vscode-quickInput-background: #f8f8f8;
+  --vscode-quickInputList-focusBackground: #e8e8e8;
+  --vscode-quickInputList-focusForeground: #000000;
+  --vscode-diffEditor-insertedLineBackground: #9bb95533;
+  --vscode-diffEditor-removedLineBackground: #ff000033;
+  --vscode-editorWarning-foreground: #bf8803;
+  --vscode-testing-iconPassed: #388a34;
+  --vscode-gitDecoration-modifiedResourceForeground: #895503;
+  --vscode-gitDecoration-deletedResourceForeground: #ad0707;
+  --vscode-gitDecoration-untrackedResourceForeground: #007100;
+}
+</style>
+<link rel="stylesheet" href="../dist/katex/katex.min.css">
+<link rel="stylesheet" href="../media/main.css">
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="host.js"></script>
+</body>
+</html>

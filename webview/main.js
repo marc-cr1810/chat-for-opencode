@@ -1,5 +1,8 @@
 // OpenCode chat webview. Plain DOM, bundled by esbuild.
 import { Marked } from "marked";
+import katex from "katex";
+import hljs from "highlight.js/lib/common";
+import markedFootnote from "marked-footnote";
 import { icons } from "./icons.js";
 
 const vscode = acquireVsCodeApi();
@@ -9,13 +12,127 @@ const vscode = acquireVsCodeApi();
 const escapeHtml = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+// Math: $$…$$ and \[…\] as display blocks, $…$ and \(…\) inline. A $ only opens inline math when
+// followed by a non-space and closes on a non-space not followed by a digit, so "$5 and $10" stays text,
+// and never runs into a code span, so "$10 and `$HOME`" does too.
+function tex(src, displayMode) {
+  try {
+    return katex.renderToString(src, { displayMode, throwOnError: false, output: "htmlAndMathml" });
+  } catch {
+    return `<code>${escapeHtml(src)}</code>`;
+  }
+}
+const mathBlock = {
+  name: "mathBlock",
+  level: "block",
+  start: (src) => src.match(/\$\$|\\\[/)?.index,
+  tokenizer(src) {
+    const m = src.match(/^ {0,3}(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])[ \t]*(?:\n|$)/);
+    if (m) return { type: "mathBlock", raw: m[0], text: (m[1] ?? m[2]).trim() };
+  },
+  renderer: (token) => `<div class="math-block">${tex(token.text, true)}</div>`,
+};
+const mathInline = {
+  name: "mathInline",
+  level: "inline",
+  start: (src) => src.match(/\$|\\\(/)?.index,
+  tokenizer(src) {
+    const m =
+      src.match(/^\$\$([\s\S]+?)\$\$/) ??
+      src.match(/^\\\(([\s\S]+?)\\\)/) ??
+      src.match(/^\$(?![\s$])((?:\\.|[^\\$`\n])*?[^\s\\`])\$(?!\d)/);
+    if (m) return { type: "mathInline", raw: m[0], text: m[1].trim(), display: m[0].startsWith("$$") };
+  },
+  renderer: (token) => tex(token.text, token.display),
+};
+
+// Syntax highlighting for fenced code with a language hljs knows. Unlabelled blocks stay plain:
+// guessing is slow on every streamed update and often wrong.
+function highlight(code, lang) {
+  const name = (lang || "").trim().split(/\s/)[0].toLowerCase();
+  if (!name || !hljs.getLanguage(name)) return escapeHtml(code);
+  try {
+    return hljs.highlight(code, { language: name, ignoreIllegals: true }).value;
+  } catch {
+    return escapeHtml(code);
+  }
+}
+
+// Raw HTML is escaped except for a few formatting tags, rebuilt without attributes (bar <details open>)
+// so nothing the model writes can add scripts, styles or event handlers. Entities pass through.
+const SAFE_TAGS = new Set(["details", "summary", "kbd", "sub", "sup", "br", "mark", "ins", "del", "s", "u", "b", "i", "em", "strong", "small", "abbr"]);
+function safeHtml(html) {
+  return html.replace(/<(\/?)([a-z][a-z0-9]*)\b([^<>]*)>|&(?:#\d+|#x[\da-f]+|[a-z]\w*);|[^<&]+|[<&]/gi, (all, close, tag, attrs) => {
+    if (all[0] === "&" && all.length > 1) return all;
+    if (!tag) return escapeHtml(all);
+    const name = tag.toLowerCase();
+    if (!SAFE_TAGS.has(name)) return escapeHtml(all);
+    if (close) return name === "br" ? "" : `</${name}>`;
+    return name === "details" && /\bopen\b/i.test(attrs) ? "<details open>" : `<${name}>`;
+  });
+}
+
+// GitHub alerts: a quote starting with [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or [!CAUTION].
+const ALERTS = { note: "Note", tip: "Tip", important: "Important", warning: "Warning", caution: "Caution" };
+function alert(quote) {
+  const m = quote.match(/^<p>\[!(note|tip|important|warning|caution)\][ \t]*(?:\n|<br>)?/i);
+  if (!m) return false;
+  const kind = m[1].toLowerCase();
+  const body = "<p>" + quote.slice(m[0].length);
+  return `<div class="alert alert-${kind}"><div class="alert-title">${icons[`alert_${kind}`]}${ALERTS[kind]}</div>${body.replace(/^<p>\s*<\/p>\s*/, "")}</div>`;
+}
+
+// Mermaid diagrams render after the markdown is in the page (see renderDiagrams); until then, and
+// whenever the source doesn't parse (say, mid-stream), the block reads as ordinary code. Once drawn,
+// the diagram replaces the code block, which the toggle brings back.
+function codeBlock(code, lang) {
+  const mermaid = lang === "mermaid";
+  const copy = `<button class="icon-btn copy-code" title="Copy">${icons.copy}</button>`;
+  const buttons = mermaid ? `<span class="code-btns"><button class="icon-btn mermaid-toggle" title="Show diagram">${icons.diagram}</button>${copy}</span>` : copy;
+  const block = `<div class="code-block"><div class="code-head"><span>${escapeHtml(lang || "")}</span>${buttons}</div><pre><code>${highlight(code, lang)}</code></pre></div>`;
+  return mermaid ? `<div class="mermaid-block" data-src="${escapeHtml(code)}">${block}</div>` : block;
+}
+
+// The language for a file path, from its extension or, for names like Makefile, the whole name.
+function langForPath(path) {
+  const name = String(path || "").split(/[\\/]/).pop().toLowerCase();
+  const ext = name.includes(".") ? name.split(".").pop() : name;
+  return ext && hljs.getLanguage(ext) ? ext : "";
+}
+
+// Highlighted HTML split into lines, each closing the spans it opens and reopening those carried
+// over from earlier lines, so a multi-line string or comment stays colored on every line. Cached,
+// since tool steps re-render on every update; very large files stay plain.
+const lineCache = new Map();
+function highlightLines(code, lang) {
+  const key = `${lang}\n${code}`;
+  let lines = lineCache.get(key);
+  if (lines) return lines;
+  const html = lang && code.length < 200_000 ? highlight(code, lang) : escapeHtml(code);
+  lines = [];
+  const open = [];
+  for (const line of html.split("\n")) {
+    const carried = open.join("");
+    for (const [tag] of line.matchAll(/<span[^>]*>|<\/span>/g)) tag === "</span>" ? open.pop() : open.push(tag);
+    lines.push(carried + line + "</span>".repeat(open.length));
+  }
+  if (lineCache.size > 200) lineCache.delete(lineCache.keys().next().value);
+  lineCache.set(key, lines);
+  return lines;
+}
+
 const marked = new Marked({
   gfm: true,
+  extensions: [mathBlock, mathInline],
   breaks: false,
   renderer: {
-    html: (html) => escapeHtml(typeof html === "string" ? html : html.text),
+    html: (html) => safeHtml(typeof html === "string" ? html : html.text),
+    blockquote: alert,
+    listitem(text, task) {
+      return task ? `<li class="task">${text}</li>\n` : false;
+    },
     code(code, lang) {
-      return `<div class="code-block"><div class="code-head"><span>${escapeHtml(lang || "")}</span><button class="icon-btn copy-code" title="Copy">${icons.copy}</button></div><pre><code>${escapeHtml(code)}</code></pre></div>`;
+      return codeBlock(code, lang);
     },
     link(href, title, text) {
       const inner = text.replace(/<a class="file-ref"[^>]*>([\s\S]*?)<\/a>/g, "$1");
@@ -41,6 +158,7 @@ function fileRef(path, line, end, inner) {
 function linkFileRefs(text) {
   return text.replace(FILE_REF_IN_TEXT, (all, path, line, end) => fileRef(path, line, end, all));
 }
+marked.use(markedFootnote({ description: "Footnotes" }));
 const md = (text) => marked.parse(text || "");
 
 // --------------------------------------------------------------------- state
@@ -182,6 +300,62 @@ app.innerHTML = `
 
 const $ = (id) => document.getElementById(id);
 const messagesEl = $("messages");
+
+// Mermaid is large, so it loads on first use from its own file beside this bundle, with the same
+// CSP nonce. Rendered diagrams are cached by theme and source so streamed re-renders don't redo them.
+const bundleScript = document.currentScript;
+let mermaidLoad;
+function loadMermaid() {
+  mermaidLoad ??= new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = new URL("mermaid/mermaid.min.js", bundleScript.src).href;
+    el.nonce = bundleScript.nonce;
+    el.onload = () => resolve(window.mermaid);
+    el.onerror = reject;
+    document.head.append(el);
+  });
+  return mermaidLoad;
+}
+const diagramCache = new Map();
+let diagramTheme, diagramId = 0;
+async function diagramSvg(src) {
+  const light = document.body.classList.contains("vscode-light") || document.body.classList.contains("vscode-high-contrast-light");
+  const theme = light ? "default" : "dark";
+  const key = `${theme}\n${src}`;
+  if (diagramCache.has(key)) return diagramCache.get(key);
+  const mermaid = await loadMermaid();
+  if (diagramTheme !== theme) {
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme, fontFamily: getComputedStyle(document.body).fontFamily, fontSize: 13, themeVariables: { fontSize: "13px" } });
+    diagramTheme = theme;
+  }
+  let svg = null;
+  try {
+    if (await mermaid.parse(src, { suppressErrors: true })) svg = (await mermaid.render(`mermaid-${++diagramId}`, src)).svg;
+  } catch {}
+  diagramCache.set(key, svg);
+  return svg;
+}
+function renderDiagrams() {
+  for (const block of messagesEl.querySelectorAll(".mermaid-block:not([data-tried])")) {
+    block.dataset.tried = "";
+    diagramSvg(block.dataset.src).then((svg) => {
+      if (!svg || !block.isConnected) return;
+      const tools = `<div class="mermaid-tools"><button class="icon-btn mermaid-toggle" title="Show source">${icons.code}</button><button class="icon-btn copy-code" title="Copy source">${icons.copy}</button></div>`;
+      block.insertAdjacentHTML("afterbegin", `<div class="mermaid-svg">${tools}${svg}</div>`);
+      block.classList.add("rendered");
+    }, () => {});
+  }
+}
+new MutationObserver(() => messagesEl.querySelector(".mermaid-block:not([data-tried])") && renderDiagrams()).observe(messagesEl, { childList: true, subtree: true });
+// A theme switch redraws diagrams in the new colors.
+new MutationObserver(() => {
+  for (const block of messagesEl.querySelectorAll(".mermaid-block[data-tried]")) {
+    block.classList.remove("rendered", "show-source");
+    block.querySelector(".mermaid-svg")?.remove();
+    delete block.dataset.tried;
+  }
+  renderDiagrams();
+}).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 const input = $("input");
 const menuEl = $("menu");
 
@@ -550,7 +724,7 @@ function renderTool(p) {
     } else if (p.tool === "write" && st.input?.content) {
       const lines = st.input.content.split("\n").length;
       summary = h("span", { class: "tool-summary" }, `${lines} lines`);
-      body = h("pre", { class: "tool-output" }, st.input.content);
+      body = h("pre", { class: "tool-output", html: highlightLines(st.input.content, langForPath(st.input.filePath)).join("\n") });
     }
   } else if (p.tool === "read" && status === "completed") {
     const lines = (st.output || "").split("\n").filter((l) => /^\d+[|:\t]/.test(l.trim())).length;
@@ -630,25 +804,36 @@ function diffStats(diff) {
   return { add, del };
 }
 
+// Lines are highlighted as two texts, the old side (context and removed lines) and the new side
+// (context and added lines), so each line is colored with the code around it as it was or will be.
 function renderDiff(diff) {
   const box = h("div", { class: "diff" });
+  const rows = [];
+  let lang = "";
   let oldLn = 0;
   let newLn = 0;
   for (const l of diff.split("\n")) {
+    if (l.startsWith("Index:") || l.startsWith("+++")) lang ||= langForPath(l.replace(/^(Index:|\+\+\+)\s*/, "").replace(/\t.*$/, ""));
     if (l.startsWith("Index:") || l.startsWith("===") || l.startsWith("---") || l.startsWith("+++") || l.startsWith("\\")) continue;
     const m = l.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
     if (m) {
       oldLn = +m[1];
       newLn = +m[2];
-      box.append(h("div", { class: "diff-line hunk" }, h("span", { class: "ln" }, ""), h("span", { class: "code" }, "⋯")));
-      continue;
-    }
-    if (l.startsWith("+")) box.append(h("div", { class: "diff-line add" }, h("span", { class: "ln" }, newLn++), h("span", { class: "code" }, l.slice(1))));
-    else if (l.startsWith("-")) box.append(h("div", { class: "diff-line del" }, h("span", { class: "ln" }, oldLn++), h("span", { class: "code" }, l.slice(1))));
+      rows.push({ kind: "hunk" });
+    } else if (l.startsWith("+")) rows.push({ kind: "add", ln: newLn++, text: l.slice(1) });
+    else if (l.startsWith("-")) rows.push({ kind: "del", ln: oldLn++, text: l.slice(1) });
     else if (l.startsWith(" ")) {
       oldLn++;
-      box.append(h("div", { class: "diff-line ctx" }, h("span", { class: "ln" }, newLn++), h("span", { class: "code" }, l.slice(1))));
+      rows.push({ kind: "ctx", ln: newLn++, text: l.slice(1) });
     }
+  }
+  const oldRows = rows.filter((r) => r.kind === "ctx" || r.kind === "del");
+  const newRows = rows.filter((r) => r.kind === "ctx" || r.kind === "add");
+  highlightLines(oldRows.map((r) => r.text).join("\n"), lang).forEach((html, i) => (oldRows[i].html = html));
+  highlightLines(newRows.map((r) => r.text).join("\n"), lang).forEach((html, i) => (newRows[i].html = html));
+  for (const r of rows) {
+    if (r.kind === "hunk") box.append(h("div", { class: "diff-line hunk" }, h("span", { class: "ln" }, ""), h("span", { class: "code" }, "⋯")));
+    else box.append(h("div", { class: `diff-line ${r.kind}` }, h("span", { class: "ln" }, r.ln), h("span", { class: "code", html: r.html })));
   }
   return box;
 }
@@ -1536,18 +1721,22 @@ document.addEventListener("keydown", (e) => {
 messagesEl.addEventListener("click", (e) => {
   const copy = e.target.closest(".copy-code");
   if (copy) {
-    const code = copy.closest(".code-block").querySelector("code").textContent;
+    const code = copy.closest(".code-block, .mermaid-block").querySelector("code").textContent;
     navigator.clipboard.writeText(code);
     copy.innerHTML = icons.check;
     setTimeout(() => (copy.innerHTML = icons.copy), 1200);
     return;
   }
+  const toggle = e.target.closest(".mermaid-toggle");
+  if (toggle) return void toggle.closest(".mermaid-block").classList.toggle("show-source");
   const a = e.target.closest("a:not(.file-ref)");
   const href = a?.getAttribute("href");
   if (href) {
     e.preventDefault();
-    // Web links open in the browser via VS Code; anything else is treated as a file path.
+    // Web links open in the browser via VS Code, #anchors (footnotes) scroll within their message,
+    // and anything else is treated as a file path.
     if (/^https?:/.test(href)) send({ type: "openExternal", url: href });
+    else if (href.startsWith("#")) a.closest(".markdown")?.querySelector(`[id="${CSS.escape(href.slice(1))}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     else openPath(href);
   }
   const ref = e.target.closest(".file-ref");

@@ -33,6 +33,7 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Worktrees**: start a conversation in an isolated git worktree, then apply its changes to your workspace or throw them away
 - **Share links** for a conversation (asks first, since the link is public)
 - **Clickable file references** like `src/app.ts:42` in replies
+- **Rich replies**: LaTeX math (KaTeX), syntax-highlighted code, Mermaid diagrams (loaded only when a reply has one), GitHub alerts, task lists, footnotes and safe inline HTML such as `<details>` and `<kbd>`. Written files and edit diffs are highlighted too
 - **Fix / Explain with OpenCode** in the lightbulb menu for errors and warnings
 - **Right-click menu** in the editor: Explain, Refactor, Write Tests, Add Selection to Prompt
 - **Status bar item** showing the agent and model, a spinner while working, and a warning when approval is needed
@@ -88,6 +89,8 @@ For development, open this folder in VS Code and press F5.
 ```bash
 npm test          # unit tests (event-stream parsing, change reconstruction)
 npm run typecheck
+npm run test:webview   # Playwright tests of the real webview in harness/index.html
+npm run harness   # serves the harness for a look in a browser, e.g. /harness/?scene=extras
 ```
 
 ## Releasing

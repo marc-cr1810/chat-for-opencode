@@ -141,10 +141,50 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15)); color: var(--accent);
 }
 .markdown pre code { color: inherit; background: none; padding: 0; }
+.markdown .math-block { margin: 0.6em 0; overflow-x: auto; overflow-y: hidden; }
+.markdown .math-block .katex-display { margin: 0; }
+.markdown .katex { font-size: 1.1em; }
 .markdown blockquote { margin: 0.4em 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
 .markdown table { border-collapse: collapse; margin: 0.5em 0; display: block; overflow-x: auto; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 3px 8px; }
 .markdown hr { border: none; border-top: 1px solid var(--border); }
+.markdown img { max-width: 100%; height: auto; }
+.markdown li.task { list-style: none; }
+.markdown li.task > input[type="checkbox"], .markdown li.task > p > input[type="checkbox"] { margin: 0 0.4em 0 -1.4em; vertical-align: -1px; }
+.markdown details { margin: 0.4em 0; }
+.markdown summary { cursor: pointer; }
+.markdown kbd {
+  font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border-radius: 4px;
+  border: 1px solid var(--border); border-bottom-width: 2px; background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
+}
+.markdown mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33)); color: inherit; }
+.alert { margin: 0.5em 0; padding: 4px 10px; border-left: 3px solid var(--alert); }
+.alert-title { display: flex; align-items: center; gap: 6px; color: var(--alert); font-weight: 600; margin: 2px 0; }
+.alert-note { --alert: #4493f8; }
+.alert-tip { --alert: #3fb950; }
+.alert-important { --alert: #ab7df8; }
+.alert-warning { --alert: #d29922; }
+.alert-caution { --alert: #f85149; }
+body.vscode-light .alert-note, body.vscode-high-contrast-light .alert-note { --alert: #0969da; }
+body.vscode-light .alert-tip, body.vscode-high-contrast-light .alert-tip { --alert: #1a7f37; }
+body.vscode-light .alert-important, body.vscode-high-contrast-light .alert-important { --alert: #8250df; }
+body.vscode-light .alert-warning, body.vscode-high-contrast-light .alert-warning { --alert: #9a6700; }
+body.vscode-light .alert-caution, body.vscode-high-contrast-light .alert-caution { --alert: #cf222e; }
+.markdown .footnotes { margin-top: 0.8em; padding-top: 0.4em; border-top: 1px solid var(--border); font-size: 0.9em; color: var(--muted); }
+.markdown .footnotes ol { margin: 0; }
+.markdown .footnotes .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+.markdown sup a[data-footnote-ref] { text-decoration: none; }
+.code-btns { display: inline-flex; }
+.mermaid-block:not(.rendered) .mermaid-toggle { display: none; }
+.mermaid-block.rendered:not(.show-source) .code-block,
+.mermaid-block.show-source .mermaid-svg { display: none; }
+.mermaid-svg { position: relative; margin: 0.6em 0; padding: 4px 0; overflow-x: auto; text-align: center; }
+.mermaid-svg > svg { max-width: 100%; height: auto; }
+.mermaid-tools {
+  position: absolute; top: 0; right: 0; display: flex; opacity: 0; transition: opacity 0.12s;
+  background: var(--bg); border-radius: 5px;
+}
+.mermaid-svg:hover .mermaid-tools, .mermaid-tools:focus-within { opacity: 1; }
 .code-block { margin: 0.5em 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .code-head {
   display: flex; justify-content: space-between; align-items: center; padding: 2px 4px 2px 10px;
@@ -154,6 +194,34 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   margin: 0; padding: 8px 10px; overflow-x: auto; font-family: var(--mono); font-size: 0.92em;
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
 }
+
+/* syntax highlighting (highlight.js classes), after VS Code's Dark Modern and Light Modern */
+:root {
+  --hl-keyword: #569cd6; --hl-control: #c586c0; --hl-string: #ce9178; --hl-number: #b5cea8;
+  --hl-comment: #6a9955; --hl-function: #dcdcaa; --hl-type: #4ec9b0; --hl-variable: #9cdcfe;
+  --hl-tag: #569cd6; --hl-attr: #9cdcfe; --hl-regexp: #d16969; --hl-meta: #c586c0;
+}
+body.vscode-light, body.vscode-high-contrast-light {
+  --hl-keyword: #0000ff; --hl-control: #af00db; --hl-string: #a31515; --hl-number: #098658;
+  --hl-comment: #008000; --hl-function: #795e26; --hl-type: #267f99; --hl-variable: #001080;
+  --hl-tag: #800000; --hl-attr: #e50000; --hl-regexp: #811f3f; --hl-meta: #af00db;
+}
+.hljs-keyword, .hljs-literal, .hljs-built_in.hljs-keyword, .hljs-selector-tag { color: var(--hl-keyword); }
+.hljs-string, .hljs-char, .hljs-template-tag, .hljs-addition .hljs-string { color: var(--hl-string); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--hl-number); }
+.hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.hljs-title.function_, .hljs-title.function_.invoke__, .hljs-section { color: var(--hl-function); }
+.hljs-title.class_, .hljs-title.class_.inherited__, .hljs-type, .hljs-built_in { color: var(--hl-type); }
+.hljs-variable, .hljs-template-variable, .hljs-params, .hljs-property, .hljs-attr { color: var(--hl-variable); }
+.hljs-name, .hljs-selector-id, .hljs-selector-class { color: var(--hl-tag); }
+.hljs-attribute, .hljs-selector-attr, .hljs-selector-pseudo { color: var(--hl-attr); }
+.hljs-regexp, .hljs-link { color: var(--hl-regexp); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-doctag { color: var(--hl-meta); }
+.hljs-subst { color: inherit; }
+.hljs-addition { background: var(--add-bg); }
+.hljs-deletion { background: var(--del-bg); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
 
 /* collapsibles */
 .coll-head { display: flex; align-items: center; gap: 6px; cursor: pointer; min-width: 0; }
