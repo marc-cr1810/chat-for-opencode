@@ -57,6 +57,77 @@ export const scenes = {
     return { cwd: CWD, agent: "build" };
   },
 
+  /**
+   * Subagents: two started together (one done, one still running), then a single long-running one
+   * whose older steps fold away, and a shell step with coloured output.
+   */
+  subagents() {
+    const s = session("SSE reconnects");
+    const src = (f) => `${CWD}/src/${f}`;
+    const step = (child, tool, input, status = "completed") => ({ id: id("prt"), sessionID: child, messageID: `${child}-m`, type: "tool", tool, callID: id("call"), state: { status, input, output: "", time: { start: T0 } } });
+    const say = (child, t) => ({ id: id("prt"), sessionID: child, messageID: `${child}-m`, type: "text", text: t });
+    const task = (description, subagent_type, child, status, output = "", secs = 35) => {
+      const t = tool("task", { description, subagent_type, prompt: "…" }, output);
+      t.state.metadata = { sessionId: child };
+      t.state.status = status;
+      // Relative to now, so a batch's overall time reads sensibly.
+      t.state.time = status === "running" ? { start: Date.now() - secs * 1000 } : { start: Date.now() - (secs + 8) * 1000, end: Date.now() - 8000 };
+      return t;
+    };
+    const report = `<task_result>
+## SSE parsing
+
+Two places parse the event stream:
+
+- \`src/streams.ts:12\` splits the body into events and keeps a partial line across chunks
+- \`src/server.ts:88\` reconnects with a capped backoff
+
+Both handle a dropped connection, and nothing else in \`src/\` reads \`text/event-stream\`.
+</task_result>`;
+    const esc = "\u001b";
+    const testOut = `${esc}[32m✓${esc}[39m test/streams.test.ts ${esc}[2m(12 tests)${esc}[22m\n${esc}[31m✗${esc}[39m test/patches.test.ts ${esc}[2m(1 failed)${esc}[22m\n\n ${esc}[1m${esc}[32mTests${esc}[39m${esc}[22m  32 passed | ${esc}[31m1 failed${esc}[39m`;
+    return {
+      cwd: CWD,
+      agent: "build",
+      busy: true,
+      session: s,
+      children: {
+        ses_find: [
+          step("ses_find", "grep", { pattern: "text/event-stream", path: src("") }),
+          step("ses_find", "read", { filePath: src("streams.ts") }),
+          step("ses_find", "read", { filePath: src("server.ts") }),
+          step("ses_find", "glob", { pattern: "**/*.ts", path: src("") }),
+        ],
+        ses_check: [
+          step("ses_check", "read", { filePath: src("server.ts") }),
+          step("ses_check", "grep", { pattern: "reconnect|backoff", path: src("") }),
+          step("ses_check", "bash", { command: "npx vitest run test/streams.test.ts" }, "running"),
+          say("ses_check", "Running the stream tests to see how a dropped connection is handled."),
+        ],
+        ses_audit: [
+          ...["streams.ts", "server.ts", "chat.ts", "extension.ts", "settings.ts", "permissions.ts", "patches.ts", "diffProvider.ts", "codeActions.ts"].map((f) => step("ses_audit", "read", { filePath: src(f) })),
+          step("ses_audit", "read", { filePath: src("server.ts") }),
+          step("ses_audit", "grep", { pattern: "reconnect|backoff", path: src("") }),
+          step("ses_audit", "bash", { command: "npx vitest run test/streams.test.ts" }, "running"),
+          say("ses_audit", "The tests pass.\n\nChecking the backoff ceiling next…"),
+        ],
+      },
+      messages: [
+        user(s, "Find every place we parse SSE events and check they handle reconnects."),
+        assistant(s, "build", [
+          text("I'll split this between two agents."),
+          task("Find SSE parsing code", "explore", "ses_find", "completed", report, 35),
+          task("Check reconnect handling", "general", "ses_check", "running", "", 42),
+        ], { done: true }),
+        user(s, "Now audit the whole extension for the same problem."),
+        assistant(s, "build", [
+          task("Audit reconnect handling", "general", "ses_audit", "running", "", 64),
+          tool("bash", { command: "npm test" }, testOut),
+        ], { done: false }),
+      ],
+    };
+  },
+
   /** A finished edit and a new file, both highlighted by their file's language. */
   changes() {
     const s = session("Debounce the resize handler");

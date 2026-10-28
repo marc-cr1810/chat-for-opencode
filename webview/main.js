@@ -221,8 +221,9 @@ const state = {
   todosOpen: true,
   diff: [],
   changesOpen: false,
-  childParts: new Map(), // subagent sessionID -> Map(partID -> tool part)
+  childParts: new Map(), // subagent sessionID -> Map(partID -> tool or text part)
   childRequested: new Set(),
+  unfolded: new Set(), // "<partID>:steps|report|detail" the user opened inside a subagent step
   commandMeta: new Map(), // user message ID -> { name, arguments } for /commands
   worktree: null,
   selection: null,
@@ -551,10 +552,23 @@ function renderMessage(id) {
     );
     return el;
   }
+  // Subagents started together (task steps with nothing shown between them) share one step.
+  let tasks = [];
+  const flush = () => {
+    if (tasks.length) el.append(tasks.length > 1 ? renderTaskGroup(tasks) : renderTool(tasks[0]));
+    tasks = [];
+  };
   for (const p of parts) {
+    if (p.type === "tool" && p.tool === "task") {
+      tasks.push(p);
+      continue;
+    }
     const node = renderPart(p);
-    if (node) el.append(node);
+    if (!node) continue;
+    flush();
+    el.append(node);
   }
+  flush();
   if (msg.info.error && msg.info.error.name !== "MessageAbortedError") {
     el.append(h("div", { class: "error-block" }, errorText(msg.info.error)));
   } else if (msg.info.error?.name === "MessageAbortedError") {
@@ -737,44 +751,19 @@ function renderTool(p) {
     body = renderTodoList(todos);
     open = true;
   } else if (p.tool === "task") {
-    const childID = meta.sessionId;
-    const steps = childID ? [...(state.childParts.get(childID)?.values() || [])].sort((a, b) => (a.id < b.id ? -1 : 1)) : [];
-    if (childID && !state.childParts.has(childID) && !state.childRequested.has(childID)) {
-      state.childRequested.add(childID);
-      send({ type: "loadChild", sessionID: childID });
-    }
-    const running = steps.filter((s) => s.state?.status === "running" || s.state?.status === "pending").length;
-    summary = h(
-      "span",
-      { class: "tool-summary" },
-      st.input?.subagent_type ? `@${st.input.subagent_type}` : "subagent",
-      steps.length ? ` · ${steps.length} step${steps.length === 1 ? "" : "s"}${running ? " (working)" : ""}` : "",
-    );
-    const nested = steps.length
-      ? h(
-          "div",
-          { class: "subagent-steps" },
-          steps.map((s) => {
-            const sum = toolSummary(s);
-            return h(
-              "div",
-              { class: "sub-step", title: sum.arg },
-              h("span", { class: `tool-icon status-${s.state?.status || "pending"}`, html: sum.icon }),
-              h("span", { class: "tool-name" }, sum.name),
-              sum.arg ? h("span", { class: `tool-arg ${sum.file ? "link" : ""}`, onClick: sum.file ? () => openPath(sum.file) : undefined }, sum.arg) : null,
-            );
-          }),
-        )
-      : null;
-    if (nested || st.output) body = h("div", {}, nested, st.output ? h("div", { class: "markdown subagent-result", html: md(st.output) }) : null);
-    open = status === "running" && !!nested;
+    const run = taskRun(p);
+    summary = h("span", { class: "tool-summary" }, run.who);
+    body = subagentBody(p, run);
+    // Open while it works and once it has a report to preview; folded if there's nothing to show.
+    open = !!body;
   } else if (st.output) {
     const out = String(st.output);
     const lineCount = out.split("\n").length;
-    summary = h("span", { class: "tool-summary" }, p.tool === "bash" ? firstLine(out) || "(no output)" : `${lineCount} line${lineCount === 1 ? "" : "s"}`);
-    body = h("pre", { class: "tool-output" }, out.length > 20000 ? out.slice(0, 20000) + "\n… (truncated)" : out);
+    summary = h("span", { class: "tool-summary" }, p.tool === "bash" ? firstLine(stripAnsi(out)) || "(no output)" : `${lineCount} line${lineCount === 1 ? "" : "s"}`);
+    const shown = out.length > 20000 ? out.slice(0, 20000) + "\n… (truncated)" : out;
+    body = p.tool === "bash" ? h("pre", { class: "tool-output", html: ansiHtml(shown) }) : h("pre", { class: "tool-output" }, shown);
   } else if (status === "running" && p.tool === "bash" && meta.output) {
-    body = h("pre", { class: "tool-output" }, meta.output);
+    body = h("pre", { class: "tool-output", html: ansiHtml(meta.output) });
     open = true;
   }
 
@@ -796,6 +785,203 @@ function renderTool(p) {
 }
 
 const firstLine = (s) => String(s || "").trim().split("\n")[0].slice(0, 200);
+
+// ------------------------------------------------------------------ subagents
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const elapsed = (time) => (time?.start ? formatWait(Math.max(0, Math.round(((time.end || Date.now()) - time.start) / 1000))) : "");
+const isRunning = (st) => st?.status === "running" || st?.status === "pending";
+
+/** A task step's subagent: its steps so far, its latest words, and "@agent · 4 steps · 35s". */
+function taskRun(p) {
+  const st = p.state || {};
+  const childID = st.metadata?.sessionId;
+  if (childID && !state.childParts.has(childID) && !state.childRequested.has(childID)) {
+    state.childRequested.add(childID);
+    send({ type: "loadChild", sessionID: childID });
+  }
+  const parts = [...(state.childParts.get(childID)?.values() || [])].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const steps = parts.filter((s) => s.type === "tool");
+  const text = parts.filter((s) => s.type === "text" && s.text?.trim()).pop()?.text || "";
+  const said = text.trim().split("\n").filter((l) => l.trim()).pop()?.replace(/^[#>*\-\s]+/, "").slice(0, 200) || "";
+  const who = [st.input?.subagent_type ? `@${st.input.subagent_type}` : "subagent", steps.length ? plural(steps.length, "step") : "", elapsed(st.time)].filter(Boolean).join(" · ");
+  return { childID, steps, said, who };
+}
+
+function subStep(s) {
+  const sum = toolSummary(s);
+  return h(
+    "div",
+    { class: "sub-step", title: sum.arg },
+    h("span", { class: `tool-icon status-${s.state?.status || "pending"}`, html: sum.icon }),
+    h("span", { class: "tool-name" }, sum.name),
+    sum.arg ? h("span", { class: `tool-arg ${sum.file ? "link" : ""}`, onClick: sum.file ? () => openPath(sum.file) : undefined }, sum.arg) : null,
+  );
+}
+
+function unfold(key, messageID, on = !state.unfolded.has(key)) {
+  on ? state.unfolded.add(key) : state.unfolded.delete(key);
+  queueRender(messageID);
+}
+
+// OpenCode wraps the report in <task_result> and appends the session id; only the report is for reading.
+const taskReport = (out) =>
+  String(out || "")
+    .replace(/<task_metadata>[\s\S]*?<\/task_metadata>/g, "")
+    .replace(/^task_id:.*\n+/, "")
+    .replace(/<\/?task_result>/g, "")
+    .trim();
+
+/**
+ * Inside a subagent step: while it runs, its last few steps (older ones folded) and its latest words;
+ * once done, the steps fold into one line and the report shows as a short preview.
+ */
+function subagentBody(p, run) {
+  const st = p.state || {};
+  const running = isRunning(st);
+  const all = state.unfolded.has(`${p.id}:steps`);
+  const keep = all ? run.steps.length : running ? 3 : 0;
+  const hidden = Math.max(0, run.steps.length - keep);
+  const rows = [];
+  if (hidden) {
+    const label = keep ? `${plural(hidden, "earlier step")}` : plural(hidden, "step");
+    rows.push(h("div", { class: "sub-step more", title: "Show all steps", onClick: () => unfold(`${p.id}:steps`, p.messageID, true) }, h("span", { class: "tool-icon", html: icons.more }), h("span", {}, label)));
+  }
+  rows.push(...run.steps.slice(hidden).map(subStep));
+  if (running && run.said) rows.push(h("div", { class: "sub-say", title: run.said }, `“${run.said}”`));
+  const nested = rows.length ? h("div", { class: "subagent-steps" }, rows) : null;
+
+  const report = st.status === "completed" ? taskReport(st.output) : "";
+  let result = null;
+  if (report) {
+    // Short reports show whole; longer ones fold to a few lines until asked for.
+    const long = report.length > 280 || report.split("\n").length > 4;
+    const full = !long || state.unfolded.has(`${p.id}:report`);
+    result = h(
+      "div",
+      {},
+      h("div", { class: `markdown subagent-result ${full ? "" : "report-preview"}`, html: md(report) }),
+      h(
+        "div",
+        { class: "report-links" },
+        long ? h("button", { class: "link-btn", onClick: () => unfold(`${p.id}:report`, p.messageID) }, full ? "Show less" : "Show full report") : null,
+        run.childID ? h("button", { class: "link-btn", title: "Open the subagent's whole conversation", onClick: () => send({ type: "loadSession", id: run.childID }) }, "Open transcript") : null,
+      ),
+    );
+  }
+  return nested || result ? h("div", {}, nested, result) : null;
+}
+
+/** Several subagents started together: one step listing each, the running ones with what they're doing now. */
+function renderTaskGroup(tasks) {
+  const runs = tasks.map((p) => [p, taskRun(p)]);
+  const count = (fn) => tasks.filter((p) => fn(p.state || {})).length;
+  const running = count(isRunning);
+  const failed = count((st) => st.status === "error");
+  const done = tasks.length - running - failed;
+  const starts = tasks.map((p) => p.state?.time?.start).filter(Boolean);
+  const ends = tasks.map((p) => p.state?.time?.end);
+  const span = starts.length ? { start: Math.min(...starts), end: running || ends.some((e) => !e) ? undefined : Math.max(...ends) } : null;
+  const status = running ? "running" : failed ? "error" : "completed";
+  const summary = [running ? `${running} running` : "", done ? `${done} done` : "", failed ? `${failed} failed` : "", elapsed(span)].filter(Boolean).join(" · ");
+
+  const rows = runs.flatMap(([p, run]) => {
+    const st = p.state || {};
+    const key = `${p.id}:detail`;
+    const icon = isRunning(st) ? icons.bot : st.status === "error" ? icons.x : icons.check;
+    const row = h(
+      "div",
+      { class: "agent-row", title: "Show this subagent's steps", onClick: () => unfold(key, p.messageID) },
+      h("span", { class: `tool-icon status-${st.status || "pending"}`, html: icon }),
+      h("span", { class: "what" }, st.input?.description || "Subagent"),
+      h("span", { class: "who" }, run.who),
+    );
+    const out = [row];
+    if (state.unfolded.has(key)) {
+      const body = subagentBody(p, run);
+      if (body) out.push(h("div", { class: "agent-detail" }, body));
+    } else if (isRunning(st) && run.steps.length) {
+      const now = run.steps.findLast((s) => isRunning(s.state)) || run.steps[run.steps.length - 1];
+      const sum = toolSummary(now);
+      out.push(h("div", { class: "agent-now", title: sum.arg }, h("span", { class: "tool-icon", html: sum.icon }), h("span", { class: "tool-arg" }, sum.arg || sum.name)));
+    }
+    return out;
+  });
+
+  let open = true;
+  if (state.settings.toolOutput !== "auto") open = state.settings.toolOutput === "expanded";
+  const el = h("div", { class: `row tool-row collapsible ${open ? "open" : ""}`, "data-pid": `${tasks[0].id}-group` }, h("span", { class: `tool-icon status-${status}`, title: status, html: icons.bot }));
+  const head = h("span", { class: "tool-head" }, h("span", { class: "tool-name" }, "Subagents"), h("span", { class: "tool-arg" }, plural(tasks.length, "task")));
+  const header = h("div", { class: "coll-head" }, head, h("span", { class: "chev", html: icons.chevronRight }));
+  header.addEventListener("click", () => toggleOpen(el));
+  el.append(h("div", { class: "tool-main" }, header, h("div", { class: "tool-sub" }, h("span", { class: "tool-summary" }, summary)), h("div", { class: "coll-body" }, h("div", { class: "subagent-steps" }, rows))));
+  return el;
+}
+
+// ------------------------------------------------------------------ shell colours
+
+// ANSI SGR codes in shell output become spans in the terminal's own colours. Other escape
+// sequences (cursor moves, titles) are dropped.
+const ANSI_RE = /\x1b\[([\d;]*)m|\x1b\[[\d;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\r(?!\n)/g;
+const ANSI_NAMES = ["Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "White"];
+const ANSI_HEX = ["#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5", "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#e5e5e5"];
+const ansiColor = (i) => `var(--vscode-terminal-ansi${i > 7 ? "Bright" : ""}${ANSI_NAMES[i % 8]}, ${ANSI_HEX[i]})`;
+function ansi256(n) {
+  if (!Number.isFinite(n) || n < 0 || n > 255) return null;
+  if (n < 16) return ansiColor(n);
+  if (n < 232) {
+    const c = (v) => (v ? 55 + v * 40 : 0);
+    n -= 16;
+    return `rgb(${c(Math.floor(n / 36))},${c(Math.floor(n / 6) % 6)},${c(n % 6)})`;
+  }
+  const g = 8 + (n - 232) * 10;
+  return `rgb(${g},${g},${g})`;
+}
+const stripAnsi = (s) => String(s ?? "").replace(ANSI_RE, "");
+function ansiHtml(text) {
+  text = String(text ?? "");
+  let out = "";
+  let last = 0;
+  let st = {};
+  const emit = (t) => {
+    if (!t) return;
+    const css = [st.fg && `color:${st.fg}`, st.bg && `background:${st.bg}`, st.bold && "font-weight:bold", st.dim && "opacity:0.6", st.italic && "font-style:italic", st.underline && "text-decoration:underline"].filter(Boolean).join(";");
+    out += css ? `<span style="${css}">${escapeHtml(t)}</span>` : escapeHtml(t);
+  };
+  for (const m of text.matchAll(ANSI_RE)) {
+    emit(text.slice(last, m.index));
+    last = m.index + m[0].length;
+    if (m[1] === undefined) continue;
+    const codes = m[1] === "" ? [0] : m[1].split(";").map(Number);
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) st = {};
+      else if (c === 1) st.bold = true;
+      else if (c === 2) st.dim = true;
+      else if (c === 3) st.italic = true;
+      else if (c === 4) st.underline = true;
+      else if (c === 22) st.bold = st.dim = false;
+      else if (c === 23) st.italic = false;
+      else if (c === 24) st.underline = false;
+      else if (c >= 30 && c <= 37) st.fg = ansiColor(c - 30);
+      else if (c >= 90 && c <= 97) st.fg = ansiColor(c - 82);
+      else if (c === 39) st.fg = null;
+      else if (c >= 40 && c <= 47) st.bg = ansiColor(c - 40);
+      else if (c >= 100 && c <= 107) st.bg = ansiColor(c - 92);
+      else if (c === 49) st.bg = null;
+      else if ((c === 38 || c === 48) && codes[i + 1] === 5) {
+        st[c === 38 ? "fg" : "bg"] = ansi256(codes[i + 2]);
+        i += 2;
+      } else if ((c === 38 || c === 48) && codes[i + 1] === 2) {
+        const [r, g, b] = codes.slice(i + 2, i + 5).map((v) => Math.min(255, Math.max(0, v | 0)));
+        st[c === 38 ? "fg" : "bg"] = `rgb(${r},${g},${b})`;
+        i += 4;
+      }
+    }
+  }
+  emit(text.slice(last));
+  return out;
+}
 
 function diffStats(diff) {
   let add = 0;
@@ -975,6 +1161,10 @@ setInterval(() => {
   if (!state.busy) return;
   checkTimeout();
   updateStatusRow();
+  // Running subagents show how long they've been going.
+  for (const [id, m] of state.messages) {
+    if ([...m.parts.values()].some((p) => p.type === "tool" && p.tool === "task" && p.state?.status === "running")) queueRender(id);
+  }
 }, 1000);
 
 function setBusy(busy) {
@@ -2045,6 +2235,15 @@ window.addEventListener("message", (ev) => {
     case "tabs":
       renderTabs(msg.tabs, msg.active);
       break;
+    case "childDelta": {
+      const part = state.childParts.get(msg.sessionID)?.get(msg.partID);
+      if (part) {
+        part[msg.field] = (part[msg.field] || "") + msg.delta;
+        const owner = taskOwner(msg.sessionID);
+        if (owner) queueRender(owner);
+      }
+      break;
+    }
     case "childParts": {
       if (!state.childParts.has(msg.sessionID)) state.childParts.set(msg.sessionID, new Map());
       const map = state.childParts.get(msg.sessionID);

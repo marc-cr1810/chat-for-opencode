@@ -82,6 +82,9 @@ const recentNotifications = new Map<string, number>();
 /** Every live controller, so a notification can check whether any visible panel already shows the session. */
 const liveControllers = new Set<ChatController>();
 
+/** IDs of the prompts subagents were given (user messages in their sessions), so their text isn't shown as the subagent's own. */
+const childPrompts = new Set<string>();
+
 /** Connects one webview (side bar or editor tab) to a set of OpenCode conversation tabs. */
 export class ChatController implements vscode.Disposable {
   private tabs: Tab[] = [];
@@ -602,11 +605,11 @@ export class ChatController implements vscode.Disposable {
     await this.applyRules(tab, last ?? this.agent).catch(() => undefined);
   }
 
-  /** Messages of a subagent session, for the nested view under a task step. */
+  /** Messages of a subagent session, for the nested view under a task step: its tool steps and what it says. */
   private async loadChild(sessionID: string) {
     this.tab.children.add(sessionID);
     const messages = await this.req<any[]>("GET", `/session/${sessionID}/message`).catch(() => []);
-    const parts = messages.flatMap((m: any) => m.parts.filter((p: any) => p.type === "tool"));
+    const parts = messages.flatMap((m: any) => m.parts.filter((p: any) => p.type === "tool" || (p.type === "text" && !p.synthetic && m.info.role === "assistant")));
     this.post({ type: "childParts", sessionID, parts });
   }
 
@@ -1095,9 +1098,15 @@ export class ChatController implements vscode.Disposable {
       if (e.type === "session.diff") return;
     }
     if (!isMain) {
-      // Subagent sessions: stream their tool steps into the nested view; surface their prompts.
-      if (e.type === "message.part.updated" && p.part?.type === "tool") {
+      // Subagent sessions: stream their tool steps and text into the nested view; surface their prompts.
+      // The prompt the subagent was given is a user message; only its own words count.
+      if (e.type === "message.updated" && p.info?.role === "user") childPrompts.add(p.info.id);
+      if (e.type === "message.part.updated" && (p.part?.type === "tool" || (p.part?.type === "text" && !p.part.synthetic && !childPrompts.has(p.part.messageID)))) {
         this.post({ type: "childParts", sessionID: sid, parts: [p.part] });
+        return;
+      }
+      if (e.type === "message.part.delta" && !childPrompts.has(p.messageID)) {
+        this.post({ type: "childDelta", sessionID: sid, partID: p.partID, field: p.field, delta: p.delta });
         return;
       }
       if (!e.type.startsWith("permission.") && !e.type.startsWith("question.")) return;

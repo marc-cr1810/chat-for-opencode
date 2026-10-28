@@ -50,6 +50,9 @@ function onMessage(msg) {
       const current = scene.session && !scene.tabs ? [{ ...scene.session, time: { updated: Date.now() } }] : [];
       return post({ type: "sessions", sessions: [...current, ...open, ...past] });
     }
+    case "loadChild":
+      // A subagent session's steps and text, from the scene's `children`.
+      return post({ type: "childParts", sessionID: msg.sessionID, parts: scene.children?.[msg.sessionID] ?? [] });
     case "searchFiles":
       return post({ type: "fileResults", query: msg.query, files: ["src/chat.ts", "src/server.ts", "webview/main.js"].filter((f) => f.includes(msg.query)) });
   }
