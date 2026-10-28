@@ -520,6 +520,12 @@ function renderMessage(id) {
           h("button", { class: "icon-btn", title: "Edit and resend from here", html: icons.pencil, onClick: (e) => startEdit(id, e.target.closest(".user-bubble"), text) }),
           h("button", {
             class: "icon-btn",
+            title: "Fork from here: a new conversation with everything before this message, and this message in the box to send",
+            html: icons.fork,
+            onClick: () => send({ type: "fork", messageID: id, text }),
+          }),
+          h("button", {
+            class: "icon-btn",
             title: "Undo to here: removes this message and everything after it, and restores files",
             html: icons.undo,
             onClick: () => undoTo(id),
@@ -2106,11 +2112,56 @@ $("moreBtn").addEventListener("click", () => {
   pop.innerHTML = "";
   const item = (label, fn) => pop.append(h("div", { class: "pop-item", onClick: () => (pop.classList.add("hidden"), fn()) }, label));
   item("New conversation in a worktree…", () => send({ type: "newWorktree" }));
+  if (state.session) {
+    item("Rename conversation…", renameCurrent);
+    item("Fork conversation", () => send({ type: "fork" }));
+  }
   item(state.session?.share?.url ? "Copy share link" : "Share conversation…", () => send({ type: "share" }));
   item("Compact conversation", () => runBuiltin("compact"));
   item("Providers and MCP servers…", () => send({ type: "openSettings" }));
   item("Show logs", () => send({ type: "showLogs" }));
 });
+
+/**
+ * Edit a title in place of `el`: Enter or leaving the field saves, Esc cancels. Unchanged or empty
+ * titles aren't sent.
+ */
+function editTitle(el, current, save) {
+  const field = h("input", { class: "title-edit", value: current, "aria-label": "Conversation title" });
+  field.value = current;
+  el.classList.add("hidden");
+  el.after(field);
+  let done = false;
+  const finish = (ok) => {
+    if (done) return;
+    done = true;
+    const title = field.value.trim();
+    field.remove();
+    el.classList.remove("hidden");
+    if (ok && title && title !== current) save(title);
+  };
+  field.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") e.preventDefault(), finish(true);
+    if (e.key === "Escape") e.preventDefault(), finish(false);
+  });
+  field.addEventListener("blur", () => finish(true));
+  field.addEventListener("click", (e) => e.stopPropagation());
+  field.focus();
+  field.select();
+}
+
+function renameCurrent() {
+  const session = state.session;
+  if (!session) return;
+  $("historyPop").classList.add("hidden");
+  editTitle($("titleBtn"), displayTitle(session.title), (title) => {
+    // Show it straight away; OpenCode's session.updated confirms it.
+    session.title = title;
+    renderTitle();
+    send({ type: "renameSession", id: session.id, title });
+  });
+}
 
 function relTime(ts) {
   const s = (Date.now() - ts) / 1000;
@@ -2146,6 +2197,21 @@ function renderSessions(list) {
           { class: `pop-item session-item ${state.session?.id === s.id ? "current" : ""}`, onClick: () => (send({ type: "loadSession", id: s.id }), pop.classList.add("hidden")) },
           h("span", { class: "s-title" }, s.title || "Untitled"),
           h("span", { class: "s-time" }, relTime(s.time?.updated || s.time?.created || Date.now())),
+          h("button", {
+            class: "icon-btn s-del",
+            title: "Rename",
+            html: icons.pencil,
+            onClick: (e) => {
+              e.stopPropagation();
+              const row = e.target.closest(".session-item");
+              editTitle(row.querySelector(".s-title"), s.title || "", (title) => {
+                s.title = title;
+                row.querySelector(".s-title").textContent = title;
+                if (state.session?.id === s.id) (state.session.title = title), renderTitle();
+                send({ type: "renameSession", id: s.id, title, relist: true });
+              });
+            },
+          }),
           h("button", {
             class: "icon-btn s-del",
             title: "Delete",
@@ -2396,7 +2462,14 @@ window.addEventListener("message", (ev) => {
       }
       break;
     case "externalPrompt":
-      sendExternal(msg.text, msg.mentions);
+      if (msg.draft) {
+        // A fork's message: back in the box to change before sending, not sent.
+        input.value = msg.text;
+        autosize();
+        renderSendBtn();
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      } else sendExternal(msg.text, msg.mentions);
       break;
     case "settings":
       applySettings(msg.settings, !settingsReceived);

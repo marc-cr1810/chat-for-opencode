@@ -50,6 +50,12 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .title-btn:hover { background: var(--hover); }
 .title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .title-others { display: inline-flex; align-items: center; }
+.title-edit {
+  flex: 1; min-width: 0; padding: 3px 6px; font: inherit; font-weight: 600; color: var(--fg); border-radius: 5px;
+  background: var(--vscode-input-background); border: 1px solid var(--vscode-focusBorder);
+}
+.title-edit:focus { outline: none; }
+.pop-item .title-edit { font-weight: normal; }
 .pop-head { padding: 6px 8px 2px; color: var(--muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
 .title-btn .chev { color: var(--muted); display: inline-flex; }
 .header-actions { display: flex; gap: 2px; flex-shrink: 0; }

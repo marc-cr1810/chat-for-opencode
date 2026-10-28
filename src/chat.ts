@@ -486,6 +486,11 @@ export class ChatController implements vscode.Disposable {
       }
       case "loadSession":
         return this.openSession(msg.id);
+      case "renameSession":
+        return this.renameSession(msg.id, msg.title, !!msg.relist);
+      case "fork":
+        // No need to stop a run: the original keeps going in the background.
+        return this.fork(msg.messageID, msg.text);
       case "deleteSession": {
         await this.server.request("DELETE", `/session/${msg.id}`);
         const open = this.tabs.find((t) => t.sessionID === msg.id);
@@ -707,6 +712,53 @@ export class ChatController implements vscode.Disposable {
     this.tab.title = session.title || "Conversation";
     await this.loadSession(id);
     this.sendTabs();
+  }
+
+  /** Rename a conversation. OpenCode takes an empty title too, which would blank it, so that's ignored. */
+  private async renameSession(id: string, title: string, relist: boolean) {
+    title = String(title ?? "").trim();
+    if (!id || !title) return;
+    const tab = this.tabs.find((t) => t.sessionID === id);
+    const session = await this.server.request<any>("PATCH", `/session/${id}`, { title }, tab ? { directory: tab.directory } : {});
+    if (tab) {
+      tab.title = session.title || title;
+      if (tab === this.tab) this.post({ type: "event", event: { type: "session.updated", properties: { info: session } } });
+      this.sendTabs();
+    }
+    if (relist) await this.handle({ type: "listSessions" });
+  }
+
+  /**
+   * Copy the active conversation into a new one and open it: everything before `messageID`, or all of
+   * it. Forking from one of your messages puts that message's text back in the box to send differently.
+   */
+  private async fork(messageID: string | undefined, text: string | undefined) {
+    const from = this.tab;
+    if (!from.sessionID) return;
+    const session = await this.req<any>("POST", `/session/${from.sessionID}/fork`, messageID ? { messageID } : {}, {}, from.directory);
+    // OpenCode names every fork of a conversation "… (fork #1)"; number them so they can be told apart.
+    const title = await this.forkTitle(session.title, session.id).catch(() => undefined);
+    if (title) await this.req("PATCH", `/session/${session.id}`, { title }, {}, from.directory).catch(() => undefined);
+    await this.openSession(session.id);
+    // A fork of a worktree conversation works in the same worktree.
+    if (from.worktree && this.tab.sessionID === session.id) {
+      this.tab.worktree = from.worktree;
+      await this.loadSession(session.id);
+      this.sendTabs();
+    }
+    if (text) this.post({ type: "externalPrompt", text, mentions: [], draft: true });
+  }
+
+  /** "Title (fork #n)" with the first n no other conversation has, or undefined if OpenCode's is already free. */
+  private async forkTitle(title: string, id: string) {
+    const m = /^(.*) \(fork #(\d+)\)$/.exec(title ?? "");
+    if (!m) return undefined;
+    const sessions = await this.req<any[]>("GET", "/session");
+    const taken = new Set(sessions.filter((s) => s.id !== id).map((s) => s.title));
+    if (!taken.has(title)) return undefined;
+    let n = Number(m[2]);
+    while (taken.has(`${m[1]} (fork #${n})`)) n++;
+    return `${m[1]} (fork #${n})`;
   }
 
   private async ensureSession(tab = this.tab): Promise<string> {

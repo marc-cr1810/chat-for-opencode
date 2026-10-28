@@ -29,6 +29,8 @@ whatever providers, models, agents and commands you've configured for the openco
 - **Context meter** showing how full the model's context is and what the session has cost; click to compact
 - **Background conversations**: one conversation shows at a time, with a dropdown to switch. A conversation that is still running or waiting for approval keeps going when you switch away; the dropdown lists it under Open, and the title shows when one needs you
 - **Edit and resend** any earlier message (undoes from that point, then sends the edited text)
+- **Fork from here** on any of your messages: a new conversation with everything before it, and that message in the box to send differently. `…` → Fork conversation copies all of it
+- **Rename** a conversation from `…` → Rename conversation, or with the pencil on any conversation in the history list
 - **Subagent view**: steps run by `explore` / `general` subagents stream in, nested under the task
 - **Worktrees**: start a conversation in an isolated git worktree, then apply its changes to your workspace or throw them away
 - **Share links** for a conversation (asks first, since the link is public)
