@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { spawn, ChildProcess } from "child_process";
 import { randomBytes } from "crypto";
 import { ListenUrlWatcher, SseParser, unwrapGlobalEvent } from "./streams";
+import { watchServer } from "./watchdog";
 
 export interface OpencodeEvent {
   type: string;
@@ -51,6 +52,8 @@ export class OpencodeServer implements vscode.Disposable {
       });
       this.authHeader = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
       this.proc = proc;
+      // If VS Code goes away without stopping it (a crash, a killed extension host), don't leave it running.
+      if (proc.pid) watchServer(proc.pid);
       const watcher = new ListenUrlWatcher();
       let settled = false;
       const timer = setTimeout(() => fail(new Error("Timed out waiting for opencode serve to start")), 30000);
